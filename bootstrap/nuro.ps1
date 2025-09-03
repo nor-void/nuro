@@ -2,7 +2,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Ver = "0.0.15"
+$Ver = "0.0.16"
 if ($env:NURO_DEBUG -eq '1') {
   echo "debug nuro v$Ver"
 }
@@ -21,8 +21,10 @@ $Repo  = "nuro"
 function Convert-ArgsToHash {
   param(
     [string]  $TargetFn,   # 例: 'NuroCmd_get'
-    [string[]]$Tokens
+    [string[]]$Tokens = @()
   )
+  if ($null -eq $Args) { $Args = @() }
+
   $meta = (Get-Command $TargetFn).Parameters   # IDictionary<string, ParameterMetadata>
 
   # 名前/エイリアスの正規化マップ（大文字小文字無視）
@@ -78,8 +80,10 @@ function Convert-ArgsToHash {
 function Invoke-RemoteCmd {
   param(
     [Parameter(Mandatory=$true)][string]$Name,
-    [string[]]$Args
+    [string[]]$Args = @()
   )
+  if ($null -eq $Args) { $Args = @() }
+
   if ($env:NURO_DEBUG -eq '1') {
       Write-Host "[nuro:Invoke-RemoteCmd] Name = $Name"
       Write-Host "[nuro:Invoke-RemoteCmd] Args.Count = $($Args.Count)"
@@ -105,7 +109,8 @@ function Invoke-RemoteCmd {
   $usage = "NuroUsage_$safe"
   
   # help 判定
-  if ($Args -contains '-h' -or $Args -contains '--help' -or $Args -contains '/?') {
+  $isHelp = ($Args -and ($Args -contains '-h' -or $Args -contains '--help' -or $Args -contains '/?'))
+  if ($isHelp) {
     if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host }
     else { Write-Host "nuro $safe - no usage available" }
     return
