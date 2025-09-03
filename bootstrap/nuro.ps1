@@ -2,6 +2,11 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$Ver = "0.0.15"
+if ($env:NURO_DEBUG -eq '1') {
+  echo "debug nuro v$Ver"
+}
+
 # ===== ref / base =====
 $Ref  = $env:NURO_REF
 $Base = if ($Ref -and $Ref -match '^[vV]\d') {
@@ -12,16 +17,75 @@ $Base = if ($Ref -and $Ref -match '^[vV]\d') {
 $Owner = "mr-certain-a"
 $Repo  = "nuro"
 
+# --- Args配列を名前付き引数ハッシュに変換 ---
+function Convert-ArgsToHash {
+  param(
+    [string]  $TargetFn,   # 例: 'NuroCmd_get'
+    [string[]]$Tokens
+  )
+  $meta = (Get-Command $TargetFn).Parameters   # IDictionary<string, ParameterMetadata>
+
+  # 名前/エイリアスの正規化マップ（大文字小文字無視）
+  $nameMap = @{}
+  foreach ($p in $meta.Values) {
+    $nameMap[$p.Name.ToLower()] = $p.Name
+    foreach ($a in $p.Aliases) { $nameMap[$a.ToLower()] = $p.Name }
+  }
+
+  $map = [ordered]@{}
+  $i = 0
+
+  # 位置引数はこの優先順で埋める（存在するものだけ）
+  $posOrder = @('Url','OutFile','Sha256','TimeoutSec') | Where-Object { $meta.ContainsKey($_) }
+  $posIdx = 0
+
+  while ($i -lt $Tokens.Count) {
+    $t = $Tokens[$i]
+
+    if ($t -eq '--') { break }    # ここから先は未解析(必要なら拡張)
+
+    if ($t -like '-*') {
+      # -Param / --param / -Alias
+      $raw = $t.TrimStart('-')
+      if ($raw -in @('h','help','?')) { return @{ __showHelp = $true } }
+
+      $canon = $nameMap[$raw.ToLower()]
+      if (-not $canon) { throw "nuro: unknown parameter '-$raw' for $TargetFn" }
+
+      $p = $meta[$canon]
+      # SwitchParameter かどうか
+      if ($p.ParameterType -eq [switch] -or $p.ParameterType.Name -eq 'SwitchParameter') {
+        $map[$canon] = $true; $i++; continue
+      } else {
+        if ($i + 1 -ge $Tokens.Count) { throw "nuro: parameter '-$raw' expects a value." }
+        $map[$canon] = $Tokens[$i+1]; $i += 2; continue
+      }
+    }
+
+    # 位置引数：未セットの次の候補に順番で割り当て
+    while ($posIdx -lt $posOrder.Count -and $map.Contains($posOrder[$posIdx])) { $posIdx++ }
+    if ($posIdx -lt $posOrder.Count) {
+      $map[$posOrder[$posIdx]] = $t
+      $posIdx++; $i++; continue
+    } else {
+      throw "nuro: unexpected positional argument '$t' for $TargetFn"
+    }
+  }
+
+  return $map
+}
+
 function Invoke-RemoteCmd {
   param(
     [Parameter(Mandatory=$true)][string]$Name,
     [string[]]$Args
   )
-
-Write-Host "[nuro:Invoke-RemoteCmd] Name = $Name"
-  Write-Host "[nuro:Invoke-RemoteCmd] Args.Count = $($Args.Count)"
-  for ($i=0; $i -lt $Args.Count; $i++) {
-    Write-Host ("  Args[{0}] = {1}" -f $i, $Args[$i])
+  if ($env:NURO_DEBUG -eq '1') {
+      Write-Host "[nuro:Invoke-RemoteCmd] Name = $Name"
+      Write-Host "[nuro:Invoke-RemoteCmd] Args.Count = $($Args.Count)"
+      for ($i=0; $i -lt $Args.Count; $i++) {
+        Write-Host ("  Args[{0}] = {1}" -f $i, $Args[$i])
+      }
   }
 
   # --- 安全化 ---
@@ -39,19 +103,29 @@ Write-Host "[nuro:Invoke-RemoteCmd] Name = $Name"
 
   $main  = "NuroCmd_$safe"
   $usage = "NuroUsage_$safe"
-  if (-not (Get-Command $main -ErrorAction SilentlyContinue)) {
-    throw "nuro: command '$safe' does not expose function '$main'"
-  }
-
-  # --- ヘルプ判定（トークンに -h/--help/? が含まれていたら）---
+  
+  # help 判定
   if ($Args -contains '-h' -or $Args -contains '--help' -or $Args -contains '/?') {
     if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host }
     else { Write-Host "nuro $safe - no usage available" }
     return
   }
-
- & $main @Args
-}
+  
+  if (-not (Get-Command $main -ErrorAction SilentlyContinue)) {
+    throw "nuro: command '$safe' does not expose function '$main'"
+  }
+  
+  # ここで Args を辞書化 → ハッシュスプラットで実行
+  $paramHash = Convert-ArgsToHash -TargetFn $main -Tokens $Args
+  if ($paramHash.Contains('__showHelp')) {
+    if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host }
+    else { Write-Host "nuro $safe - no usage available" }
+    return
+  }
+  
+  $res = & $main @paramHash
+  if ($null -ne $res) { Write-Output $res }
+ }
 
 function Get-AllCommandsUsage {
   $apiUrl = "https://api.github.com/repos/$Owner/$Repo/contents/cmds"
@@ -93,7 +167,7 @@ function Get-AllCommandsUsage {
 
 function nuro {
   if ($args.Count -eq 0) {
-    Write-Host "nuro — minimal runner v0.0.10`n"
+    Write-Host "nuro — minimal runner v$Ver`n"
     Write-Host "USAGE:"
     Write-Host "  nuro <command> [args...]"
     Write-Host "  nuro <command> -h|--help|/?`n"
