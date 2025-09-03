@@ -1,6 +1,6 @@
 # cmds/get.ps1
 if ($env:NURO_DEBUG -eq '1') {
-  echo "debug get v0.2"
+  echo "debug get v0.3"
 }
 
 function NuroUsage_get {
