@@ -36,23 +36,43 @@ function Get-AllCommandsUsage {
   $apiUrl = "https://api.github.com/repos/$Owner/$Repo/contents/cmds"
   try { $files = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing } catch { return @() }
   $lines = @()
-  foreach($f in $files){
-    if($f.name -like '*.ps1'){
+
+  foreach ($f in $files) {
+    if ($f.name -like '*.ps1') {
       $name = [IO.Path]::GetFileNameWithoutExtension($f.name)
+      $url  = "$Base/cmds/$($f.name)"
       try {
-        $line = Invoke-RemoteCmd -Name $name -Args @('--help')
-        if($line){ $lines += "  $line" }
-      } catch {
-        $lines += "  nuro $name  (usage unavailable)"
+        $code = Invoke-RestMethod -Uri $url -UseBasicParsing
+        $sb   = [scriptblock]::Create($code)
+
+        # 同一スコープに読み込む（ドットソース）
+        . $sb
+
+        $usageFn = "NuroUsage_$name"
+        if (Get-Command $usageFn -ErrorAction SilentlyContinue) {
+          $line = & $usageFn
+          if ($line) { $lines += "  $line" }
+        } else {
+          $lines += "  nuro $name - no usage available"
+        }
+
+        # 掃除（次のループに影響しないよう関数を消す）
+        Remove-Item "function:$usageFn" -ErrorAction SilentlyContinue
+        Remove-Item "function:NuroCmd_$name" -ErrorAction SilentlyContinue
+      }
+      catch {
+        $lines += "  nuro $name - (usage unavailable)"
       }
     }
   }
+
   return $lines
 }
 
+
 function nuro {
   if ($args.Count -eq 0) {
-    Write-Host "nuro — minimal runner v0.2`n"
+    Write-Host "nuro — minimal runner v0.3`n"
     Write-Host "USAGE:"
     Write-Host "  nuro <command> [args...]"
     Write-Host "  nuro <command> -h|--help|/?`n"
