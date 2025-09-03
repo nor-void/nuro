@@ -11,6 +11,14 @@ function NuroCmd_get {
     [switch]$Force,
     [int]$TimeoutSec = 60
   )
+
+if ($env:NURO_DEBUG -eq '1') {
+  Write-Host "[nuro:get][DBG] PSBoundParameters:"
+  $PSBoundParameters.GetEnumerator() | ForEach-Object {
+    Write-Host ("  {0} = {1}" -f $_.Key, $_.Value)
+  }
+}
+
   Set-StrictMode -Version Latest
   $ErrorActionPreference = 'Stop'
 
