@@ -1,39 +1,58 @@
 # cmds/get.ps1
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$Url,
+  [string]$Out,
+  [string]$Sha256,
+  [switch]$Force,
+  [int]$TimeoutSec = 60
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Invoke-NuroGet {
-  [CmdletBinding()]
-  param(
-    [Parameter(Mandatory=$true)][string]$Url,
-    [string]$Out,
-    [string]$Sha256,
-    [switch]$Force,
-    [int]$TimeoutSec = 60
-  )
+function Write-Nuro([string]$Msg) { Write-Host "[nuro:get] $Msg" }
 
-  Ensure-NuroDirs
-  if (-not $Out) { $Out = Default-OutputPath -Url $Url }
+# 既定の保存先: ~/.nuro/pkgs/<filename>
+if (-not $Out) {
+  $home = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+  $pkgs = Join-Path $home '.nuro\pkgs'
+  if (-not (Test-Path $pkgs)) { New-Item -ItemType Directory -Path $pkgs | Out-Null }
 
-  if ((Test-Path $Out) -and -not $Force) {
-    Write-Nuro "exists (use -Force to overwrite): $Out"
-    return $Out
-  }
-
-  $tmp = New-Item -ItemType File -Path ([System.IO.Path]::GetTempFileName()) -Force
-  Remove-Item $tmp -Force
-  $tmp = [System.IO.Path]::GetTempFileName()
-
-  Write-Nuro "downloading: $Url"
-  try {
-    # いちばん確実：一旦ファイルに落とす
-    Invoke-WebRequest -Uri $Url -OutFile $tmp -TimeoutSec $TimeoutSec | Out-Null
-  } catch {
-    Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-    throw
-  }
-
-  Save-WithHashCheck -SrcPath $tmp -DstPath $Out -Sha256 $Sha256
-  return $Out
+  $fname = [System.IO.Path]::GetFileName(([Uri]$Url).AbsolutePath)
+  if ([string]::IsNullOrWhiteSpace($fname)) { $fname = 'download.bin' }
+  $Out = Join-Path $pkgs $fname
+} else {
+  $dir = Split-Path $Out -Parent
+  if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
 }
 
+# 既存ファイルの扱い
+if ((Test-Path $Out) -and -not $Force) {
+  Write-Nuro "exists (use -Force to overwrite): $Out"
+  $Out
+  return
+}
+
+# ダウンロード → 一時ファイルでハッシュ検証 → 配置
+$tmp = [System.IO.Path]::GetTempFileName()
+try {
+  Write-Nuro "downloading: $Url"
+  Invoke-WebRequest -Uri $Url -OutFile $tmp -TimeoutSec $TimeoutSec | Out-Null
+
+  if ($Sha256) {
+    $actual = (Get-FileHash -Algorithm SHA256 -Path $tmp).Hash.ToLowerInvariant()
+    if ($actual -ne $Sha256.ToLowerInvariant()) {
+      Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+      throw "SHA256 mismatch. expected=$Sha256 actual=$actual"
+    }
+  }
+
+  Move-Item -Force $tmp $Out
+  Write-Nuro "saved: $Out"
+  $Out
+}
+catch {
+  Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+  throw
+}

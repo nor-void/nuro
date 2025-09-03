@@ -1,53 +1,15 @@
-# nuro bootstrap
-# GitHub 直読みで lib/core.ps1 と cmds/get.ps1 をロードして nuro コマンドを定義する
-# ローカルにクローン不要、irm + iex だけで即利用可
-
+# bootstrap/nuro.ps1
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ============================================================
-# 設定：参照するリビジョン
-# ============================================================
-# デフォルトは main ブランチ。タグ指定したい場合は環境変数 NURO_REF をセットしておく。
-$Ref = $env:NURO_REF
-if (-not $Ref) { $Ref = "main" }
-
-function Get-BaseUrl {
-  param([string]$Ref)
-  if ($Ref -match '^[vV]\d') {
-    # タグ指定
-    return "https://raw.githubusercontent.com/mr-certain-a/nuro/refs/tags/$Ref"
-  } else {
-    # ブランチ指定
-    return "https://raw.githubusercontent.com/mr-certain-a/nuro/refs/heads/$Ref"
-  }
+# 参照先（デフォルト main）。タグ固定したい時だけ $env:NURO_REF="v0.0.1" を設定
+$Ref  = $env:NURO_REF
+$Base = if ($Ref -and $Ref -match '^[vV]\d') {
+  "https://raw.githubusercontent.com/mr-certain-a/nuro/refs/tags/$Ref"
+} else {
+  "https://raw.githubusercontent.com/mr-certain-a/nuro/refs/heads/main"
 }
 
-$Base = Get-BaseUrl -Ref $Ref
-
-# ============================================================
-# リモート import ヘルパ
-# ============================================================
-function Import-Remote {
-  param([Parameter(Mandatory=$true)][string]$RelativePath)
-  $url = "$Base/$RelativePath"
-  try {
-    $code = Invoke-RestMethod -Uri $url -UseBasicParsing
-    Invoke-Expression $code
-  } catch {
-    throw "[nuro] failed to load: $url`n$($_.Exception.Message)"
-  }
-}
-
-# ============================================================
-# サブモジュールをロード
-# ============================================================
-Import-Remote 'lib/core.ps1'
-Import-Remote 'cmds/get.ps1'
-
-# ============================================================
-# エントリポイント
-# ============================================================
 function nuro {
   [CmdletBinding()]
   param(
@@ -60,17 +22,25 @@ function nuro {
   )
 
   switch ($Cmd) {
-    'get'  { Invoke-NuroGet @Rest }
+    'get' {
+      $url  = "$Base/cmds/get.ps1"
+      # 直接文字列としてコード取得→ScriptBlockにしてパラメータ付きで実行（ローカル保存しない）
+      $code = Invoke-RestMethod -Uri $url -UseBasicParsing
+      $sb   = [scriptblock]::Create($code)
+      & $sb @Rest
+    }
     default {
-      Write-Host @"
-nuro — minimal scoop-like runner (PowerShell)
+@"
+nuro — minimal runner
 
 USAGE:
   nuro get -Url <https://...> [-Out <path>] [-Sha256 <hex>] [-Force] [-TimeoutSec <int>]
 
-EXAMPLE:
-  nuro get -Url https://example.com/tool.ps1 -Out `$HOME\.nuro\pkgs\tool.ps1
-"@
+TIPS:
+  # タグ固定で再現性を上げる場合
+  `$env:NURO_REF = 'v0.0.1'
+
+"@ | Write-Host
     }
   }
 }
