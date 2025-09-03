@@ -27,14 +27,11 @@ if (-not $OutFile) {
   if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
 }
 
-# 既存ファイルの扱い
 if ((Test-Path $OutFile) -and -not $Force) {
   Write-Nuro "exists (use -Force to overwrite): $OutFile"
-  $OutFile
-  return
+  $OutFile; return
 }
 
-# ダウンロード → 一時ファイルでハッシュ検証 → 配置
 $tmp = [System.IO.Path]::GetTempFileName()
 try {
   Write-Nuro "downloading: $Url"
