@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$Url,
-  [string]$Out,
+  [string]$OutFile,
   [string]$Sha256,
   [switch]$Force,
   [int]$TimeoutSec = 60
@@ -14,23 +14,23 @@ $ErrorActionPreference = 'Stop'
 function Write-Nuro([string]$Msg) { Write-Host "[nuro:get] $Msg" }
 
 # 既定の保存先: ~/.nuro/pkgs/<filename>
-if (-not $Out) {
+if (-not $OutFile) {
   $home = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
   $pkgs = Join-Path $home '.nuro\pkgs'
   if (-not (Test-Path $pkgs)) { New-Item -ItemType Directory -Path $pkgs | Out-Null }
 
   $fname = [System.IO.Path]::GetFileName(([Uri]$Url).AbsolutePath)
   if ([string]::IsNullOrWhiteSpace($fname)) { $fname = 'download.bin' }
-  $Out = Join-Path $pkgs $fname
+  $OutFile = Join-Path $pkgs $fname
 } else {
-  $dir = Split-Path $Out -Parent
+  $dir = Split-Path $OutFile -Parent
   if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
 }
 
 # 既存ファイルの扱い
-if ((Test-Path $Out) -and -not $Force) {
-  Write-Nuro "exists (use -Force to overwrite): $Out"
-  $Out
+if ((Test-Path $OutFile) -and -not $Force) {
+  Write-Nuro "exists (use -Force to overwrite): $OutFile"
+  $OutFile
   return
 }
 
@@ -48,9 +48,9 @@ try {
     }
   }
 
-  Move-Item -Force $tmp $Out
-  Write-Nuro "saved: $Out"
-  $Out
+  Move-Item -Force $tmp $OutFile
+  Write-Nuro "saved: $OutFile"
+  $OutFile
 }
 catch {
   Remove-Item -Force $tmp -ErrorAction SilentlyContinue
