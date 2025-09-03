@@ -18,6 +18,12 @@ function Invoke-RemoteCmd {
     [string[]]$Args
   )
 
+Write-Host "[nuro:Invoke-RemoteCmd] Name = $Name"
+  Write-Host "[nuro:Invoke-RemoteCmd] Args.Count = $($Args.Count)"
+  for ($i=0; $i -lt $Args.Count; $i++) {
+    Write-Host ("  Args[{0}] = {1}" -f $i, $Args[$i])
+  }
+
   # --- 安全化 ---
   $safe = $Name -replace '[^a-zA-Z0-9_-]', ''
   if ($safe -ne $Name -or [string]::IsNullOrWhiteSpace($safe)) {
@@ -87,7 +93,7 @@ function Get-AllCommandsUsage {
 
 function nuro {
   if ($args.Count -eq 0) {
-    Write-Host "nuro — minimal runner v0.0.9`n"
+    Write-Host "nuro — minimal runner v0.0.10`n"
     Write-Host "USAGE:"
     Write-Host "  nuro <command> [args...]"
     Write-Host "  nuro <command> -h|--help|/?`n"
