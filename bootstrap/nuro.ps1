@@ -2,12 +2,15 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Ver = "0.0.15"
+$Ver = "0.0.17"
+
 if ($env:NURO_DEBUG -eq '1') {
   echo "debug nuro v$Ver"
 }
 
-# ===== ref / base =====
+#================================================================================
+# ref / base
+#================================================================================
 $Ref  = $env:NURO_REF
 $Base = if ($Ref -and $Ref -match '^[vV]\d') {
   "https://raw.githubusercontent.com/mr-certain-a/nuro/refs/tags/$Ref"
@@ -16,6 +19,107 @@ $Base = if ($Ref -and $Ref -match '^[vV]\d') {
 }
 $Owner = "mr-certain-a"
 $Repo  = "nuro"
+
+#================================================================================
+# === Bucket registry (local JSON) ===
+#================================================================================
+$NURO_HOME   = Join-Path ($env:USERPROFILE ?? $HOME) ".nuro"
+$NURO_CONFIG = Join-Path $NURO_HOME "config"
+$BUCKET_FILE = Join-Path $NURO_CONFIG "buckets.json"
+
+function Initialize-NuroRegistry {
+  if (-not (Test-Path $NURO_CONFIG)) { New-Item -ItemType Directory -Path $NURO_CONFIG | Out-Null }
+  if (-not (Test-Path $BUCKET_FILE)) {
+    $ref = $env:NURO_REF
+    $mainRef = if ($ref -and $ref -match '^[vV]\d') { "refs/tags/$ref" } else { "refs/heads/main" }
+    $obj = @{
+      buckets = @(
+        @{ name='official'; uri=("github::mr-certain-a/nuro@{0}" -f $mainRef); priority=100; trusted=$true }
+      )
+      pins = @{}
+    }
+    $obj | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $BUCKET_FILE
+  }
+}
+function Load-NuroRegistry { Initialize-NuroRegistry; Get-Content $BUCKET_FILE -Raw | ConvertFrom-Json }
+function Save-NuroRegistry($obj) { ($obj | ConvertTo-Json -Depth 5) | Set-Content -Encoding UTF8 $BUCKET_FILE }
+
+# uri 形式:
+#  - github::owner/repo@<ref>   （ref=refs/heads/.. / refs/tags/.. / <sha>）
+#  - raw::https://host/base     （<base>/<cmd>.ps1 を取りに行く）
+#  - local::<absolute_path>     （<path>\<cmd>.ps1 を読む）
+#  - それ以外（絶対/相対パス）は local 扱いに自動補正
+function Parse-BucketUri([string]$uri) {
+  if ($uri -like 'github::*') {
+    $spec = $uri.Substring(8) # owner/repo@ref
+    $parts = $spec -split '@', 2
+    $repo  = $parts[0]
+    $ref   = if ($parts.Count -gt 1 -and $parts[1]) { $parts[1] } else { 'refs/heads/main' }
+    return @{ type='github'; base=("https://raw.githubusercontent.com/{0}/{1}" -f $repo, $ref) }
+  }
+  elseif ($uri -like 'raw::*') {
+    return @{ type='raw'; base=($uri.Substring(5).TrimEnd('/')) }
+  }
+  elseif ($uri -like 'local::*') {
+    return @{ type='local'; base=($uri.Substring(7)) }
+  }
+  else {
+    # パスっぽいものは local 扱い
+    return @{ type='local'; base=$uri }
+  }
+}
+
+# コマンドスクリプトの取得
+function Resolve-CmdSource([string]$bucketUri,[string]$cmdName) {
+  $p = Parse-BucketUri $bucketUri
+  switch ($p.type) {
+    'github' { return @{ kind='remote'; url=("{0}/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) } }
+    'raw'    { return @{ kind='remote'; url=("{0}/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) } }
+    'local'  {
+      $path = Join-Path $p.base "$cmdName.ps1"
+      return @{ kind='local'; path=$path }
+    }
+  }
+}
+
+# 実行（取って dot-source → NuroCmd_* 呼び出し）; Args は後述の Convert-ArgsToHash を使用
+function Run-FromBucket([string]$bucketUri,[string]$cmd,[string[]]$tokens) {
+  $src = Resolve-CmdSource $bucketUri $cmd
+  $H = @{ 'Cache-Control'='no-cache'; 'Pragma'='no-cache'; 'User-Agent'='nuro' }
+
+  $code = $null
+  if ($src.kind -eq 'remote') {
+    $code = Invoke-RestMethod -Uri $src.url -Headers $H -UseBasicParsing
+  } else {
+    if (-not (Test-Path $src.path)) { throw "local script not found: $($src.path)" }
+    $code = Get-Content $src.path -Raw -Encoding UTF8
+  }
+
+  $sb = [scriptblock]::Create($code)
+  . $sb
+
+  $main  = "NuroCmd_$cmd"
+  $usage = "NuroUsage_$cmd"
+
+  # help?
+  if ($tokens -and ($tokens -contains '-h' -or $tokens -contains '--help' -or $tokens -contains '/?')) {
+    if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host } else { Write-Host "nuro $cmd - no usage available" }
+    return
+  }
+
+  if (-not (Get-Command $main -ErrorAction SilentlyContinue)) {
+    throw "nuro: command '$cmd' does not expose function '$main'"
+  }
+
+  $ph = Convert-ArgsToHash -TargetFn $main -Tokens $tokens
+  if ($ph.Contains('__showHelp')) {
+    if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host } else { Write-Host "nuro $cmd - no usage available" }
+    return
+  }
+
+  $res = & $main @ph
+  if ($null -ne $res) { Write-Output $res }
+}
 
 # --- Args配列を名前付き引数ハッシュに変換 ---
 function Convert-ArgsToHash {
@@ -88,44 +192,35 @@ function Invoke-RemoteCmd {
       }
   }
 
-  # --- 安全化 ---
-  $safe = $Name -replace '[^a-zA-Z0-9_-]', ''
-  if ($safe -ne $Name -or [string]::IsNullOrWhiteSpace($safe)) {
-    throw "nuro: invalid command name '$Name'"
+  # bucket 指定 (bucket:cmd) の分解
+  $bucketHint = $null; $cmd = $Name
+  if ($Name -match '^([^:]+):([^:]+)$') { $bucketHint = $Matches[1]; $cmd = $Matches[2] }
+
+  $reg = Load-NuroRegistry
+
+  # pin 優先
+  if (-not $bucketHint -and $reg.pins.PSObject.Properties.Name -contains $cmd) {
+    $bucketHint = $reg.pins.$cmd
   }
 
-  # --- 取得（キャッシュ回避つき）---
-  $url = "$Base/cmds/$safe.ps1?cb=$([Guid]::NewGuid())"
-  $H = @{ 'Cache-Control'='no-cache'; 'Pragma'='no-cache'; 'User-Agent'='nuro' }
-  $code = Invoke-RestMethod -Uri $url -Headers $H -UseBasicParsing
-  $sb   = [scriptblock]::Create($code)
-  . $sb  # 同一スコープで NuroUsage_*, NuroCmd_* を定義
+  if ($bucketHint) {
+    $b = $reg.buckets | Where-Object { $_.name -eq $bucketHint }
+    if (-not $b) { throw "bucket '$bucketHint' not found" }
+    return (Run-FromBucket -bucketUri $b.uri -cmd $cmd -tokens $Args)
+  }
 
-  $main  = "NuroCmd_$safe"
-  $usage = "NuroUsage_$safe"
-  
-  # help 判定
-  if ($Args -contains '-h' -or $Args -contains '--help' -or $Args -contains '/?') {
-    if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host }
-    else { Write-Host "nuro $safe - no usage available" }
-    return
+  # 候補列: priority desc
+  $cands = $reg.buckets | Sort-Object -Property @{Expression='priority';Descending=$true}
+  $errors = @()
+  foreach ($b in $cands) {
+    try {
+      return (Run-FromBucket -bucketUri $b.uri -cmd $cmd -tokens $Args)
+    } catch {
+      $errors += "  - $($b.name): $($_.Exception.Message.Split("`n")[0])"
+    }
   }
-  
-  if (-not (Get-Command $main -ErrorAction SilentlyContinue)) {
-    throw "nuro: command '$safe' does not expose function '$main'"
-  }
-  
-  # ここで Args を辞書化 → ハッシュスプラットで実行
-  $paramHash = Convert-ArgsToHash -TargetFn $main -Tokens $Args
-  if ($paramHash.Contains('__showHelp')) {
-    if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host }
-    else { Write-Host "nuro $safe - no usage available" }
-    return
-  }
-  
-  $res = & $main @paramHash
-  if ($null -ne $res) { Write-Output $res }
- }
+  throw ("nuro: command '$cmd' not found in any bucket.`n" + ($errors -join "`n"))
+}
 
 function Get-AllCommandsUsage {
   $apiUrl = "https://api.github.com/repos/$Owner/$Repo/contents/cmds"
