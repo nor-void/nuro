@@ -1,4 +1,5 @@
 # cmds/get.ps1
+echo "debug get v0.1"
 function NuroUsage_get {
   'nuro get -Url <https://...> [-OutFile <path>] [-Sha256 <hex>] [-Force] [-TimeoutSec <int>]'
 }
