@@ -19,6 +19,7 @@ function Invoke-RemoteCmd {
   $url = "$Base/cmds/$safe.ps1"
   $code = Invoke-RestMethod -Uri $url -UseBasicParsing
   $sb   = [scriptblock]::Create($code)
+  . $sb
   & $sb   # NuroUsage_*, NuroCmd_* を定義してもらう
   $main  = "NuroCmd_$safe"
   $usage = "NuroUsage_$safe"
@@ -72,7 +73,7 @@ function Get-AllCommandsUsage {
 
 function nuro {
   if ($args.Count -eq 0) {
-    Write-Host "nuro — minimal runner v0.3`n"
+    Write-Host "nuro — minimal runner v0.4`n"
     Write-Host "USAGE:"
     Write-Host "  nuro <command> [args...]"
     Write-Host "  nuro <command> -h|--help|/?`n"
