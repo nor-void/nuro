@@ -18,60 +18,93 @@ function Invoke-RemoteCmd {
     [string[]]$Args
   )
 
-  # コマンド名の安全化（英数/_- のみ）
+  # --- 安全化 ---
   $safe = $Name -replace '[^a-zA-Z0-9_-]', ''
   if ($safe -ne $Name -or [string]::IsNullOrWhiteSpace($safe)) {
     throw "nuro: invalid command name '$Name'"
   }
 
-  # リモート取得（キャッシュ回避ヘッダ）
+  # --- 取得（キャッシュ回避つき）---
   $url = "$Base/cmds/$safe.ps1?cb=$([Guid]::NewGuid())"
-  $H = @{
-    'Cache-Control' = 'no-cache'
-    'Pragma'        = 'no-cache'
-    'User-Agent'    = 'nuro'
-  }
-
-  try {
-    $code = Invoke-RestMethod -Uri $url -Headers $H -UseBasicParsing
-  } catch {
-    throw "nuro: failed to fetch '$safe' from $url`n$($_.Exception.Message)"
-  }
-
-  # 同一スコープへ定義をロード（Usage/Cmd 関数を公開）
-  try {
-    $sb = [scriptblock]::Create($code)
-    . $sb
-  } catch {
-    throw "nuro: failed to load '$safe' script.`n$($_.Exception.Message)"
-  }
+  $H = @{ 'Cache-Control'='no-cache'; 'Pragma'='no-cache'; 'User-Agent'='nuro' }
+  $code = Invoke-RestMethod -Uri $url -Headers $H -UseBasicParsing
+  $sb   = [scriptblock]::Create($code)
+  . $sb  # 同一スコープで NuroUsage_*, NuroCmd_* を定義
 
   $main  = "NuroCmd_$safe"
   $usage = "NuroUsage_$safe"
-
-  # ヘルプ要求の判定
-  $isHelp = $false
-  foreach ($h in @('-h','--help','/?')) {
-    if ($Args -contains $h) { $isHelp = $true; break }
+  if (-not (Get-Command $main -ErrorAction SilentlyContinue)) {
+    throw "nuro: command '$safe' does not expose function '$main'"
   }
 
-  if ($isHelp) {
-    if (Get-Command $usage -ErrorAction SilentlyContinue) {
-      $line = & $usage
-      if ($line) { Write-Host $line } else { Write-Host "nuro $safe - no usage available" }
-    } else {
-      Write-Host "nuro $safe - no usage available"
-    }
+  # --- ヘルプ判定（トークンに -h/--help/? が含まれていたら）---
+  if ($Args -contains '-h' -or $Args -contains '--help' -or $Args -contains '/?') {
+    if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host }
+    else { Write-Host "nuro $safe - no usage available" }
     return
   }
 
-  # 本体実行（必須）
-  if (Get-Command $main -ErrorAction SilentlyContinue) {
-    $res = & $main @Args
-    if ($null -ne $res) { Write-Output $res }
-  } else {
-    throw "nuro: command '$safe' does not expose function '$main'"
+  # --- Args を「名前付き引数」に変換（ハッシュスプラット用）---
+  function Build-ParamHash {
+    param([string]$FnName,[string[]]$Tokens)
+    $meta = (Get-Command $FnName).Parameters
+    $map  = [ordered]@{}
+    $i=0
+    while ($i -lt $Tokens.Count) {
+      $t = $Tokens[$i]
+
+      # -- 終端（以降は未対応:必要なら拡張）--
+      if ($t -eq '--') { break }
+
+      # -- -Param / --param 形式 --
+      if ($t -match '^(--?)(.+)$') {
+        $raw = $matches[2]
+
+        # help はここでも拾う
+        if ($raw -in @('h','help','?')) { return @{ __showHelp = $true } }
+
+        # 名前を正規化（大文字小文字無視で既存パラメータに合わせる）
+        $canon = ($meta.Keys | Where-Object { $_.ToLower() -eq $raw.ToLower() } | Select-Object -First 1)
+        if (-not $canon) { throw "nuro: unknown parameter '-$raw' for $FnName" }
+
+        $p = $meta[$canon]
+        if ($p.ParameterType -eq [switch] -or $p.ParameterType.Name -eq 'SwitchParameter') {
+          $map[$canon] = $true
+          $i++
+        } else {
+          if ($i + 1 -ge $Tokens.Count) { throw "nuro: parameter '-$raw' expects a value." }
+          $val = $Tokens[$i+1]
+          $map[$canon] = $val
+          $i += 2
+        }
+        continue
+      }
+
+      # -- 位置引数フォールバック（代表的な順で埋める）--
+      # 例: nuro get https://example.com out.txt -Force
+      foreach ($cand in @('Url','OutFile','Sha256','TimeoutSec')) {
+        if ($meta.ContainsKey($cand) -and -not $map.ContainsKey($cand)) {
+          $map[$cand] = $t
+          $t = $null
+          break
+        }
+      }
+      if ($t) { throw "nuro: unexpected positional argument '$t' for $FnName" }
+      $i++
+    }
+    return $map
   }
+
+  $paramHash = Build-ParamHash -FnName $main -Tokens $Args
+  if ($paramHash.ContainsKey('__showHelp')) {
+    if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host }
+    else { Write-Host "nuro $safe - no usage available" }
+    return
+  }
+
+  # --- 実行（ハッシュスプラット！）---
+  $res = & $main @paramHash
+  if ($null -ne $res) { Write-Output $res }
 }
 
 function Get-AllCommandsUsage {
@@ -114,7 +147,7 @@ function Get-AllCommandsUsage {
 
 function nuro {
   if ($args.Count -eq 0) {
-    Write-Host "nuro — minimal runner v0.0.7`n"
+    Write-Host "nuro — minimal runner v0.0.8`n"
     Write-Host "USAGE:"
     Write-Host "  nuro <command> [args...]"
     Write-Host "  nuro <command> -h|--help|/?`n"
