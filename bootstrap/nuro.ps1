@@ -44,67 +44,7 @@ function Invoke-RemoteCmd {
     return
   }
 
-  # --- Args を「名前付き引数」に変換（ハッシュスプラット用）---
-  function Build-ParamHash {
-    param([string]$FnName,[string[]]$Tokens)
-    $meta = (Get-Command $FnName).Parameters
-    $map  = [ordered]@{}
-    $i=0
-    while ($i -lt $Tokens.Count) {
-      $t = $Tokens[$i]
-
-      # -- 終端（以降は未対応:必要なら拡張）--
-      if ($t -eq '--') { break }
-
-      # -- -Param / --param 形式 --
-      if ($t -match '^(--?)(.+)$') {
-        $raw = $matches[2]
-
-        # help はここでも拾う
-        if ($raw -in @('h','help','?')) { return @{ __showHelp = $true } }
-
-        # 名前を正規化（大文字小文字無視で既存パラメータに合わせる）
-        $canon = ($meta.Keys | Where-Object { $_.ToLower() -eq $raw.ToLower() } | Select-Object -First 1)
-        if (-not $canon) { throw "nuro: unknown parameter '-$raw' for $FnName" }
-
-        $p = $meta[$canon]
-        if ($p.ParameterType -eq [switch] -or $p.ParameterType.Name -eq 'SwitchParameter') {
-          $map[$canon] = $true
-          $i++
-        } else {
-          if ($i + 1 -ge $Tokens.Count) { throw "nuro: parameter '-$raw' expects a value." }
-          $val = $Tokens[$i+1]
-          $map[$canon] = $val
-          $i += 2
-        }
-        continue
-      }
-
-      # -- 位置引数フォールバック（代表的な順で埋める）--
-      # 例: nuro get https://example.com out.txt -Force
-      foreach ($cand in @('Url','OutFile','Sha256','TimeoutSec')) {
-        if ($meta.ContainsKey($cand) -and -not $map.ContainsKey($cand)) {
-          $map[$cand] = $t
-          $t = $null
-          break
-        }
-      }
-      if ($t) { throw "nuro: unexpected positional argument '$t' for $FnName" }
-      $i++
-    }
-    return $map
-  }
-
-  $paramHash = Build-ParamHash -FnName $main -Tokens $Args
-  if ($paramHash.ContainsKey('__showHelp')) {
-    if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host }
-    else { Write-Host "nuro $safe - no usage available" }
-    return
-  }
-
-  # --- 実行（ハッシュスプラット！）---
-  $res = & $main @paramHash
-  if ($null -ne $res) { Write-Output $res }
+ & $main @Args
 }
 
 function Get-AllCommandsUsage {
@@ -147,7 +87,7 @@ function Get-AllCommandsUsage {
 
 function nuro {
   if ($args.Count -eq 0) {
-    Write-Host "nuro — minimal runner v0.0.8`n"
+    Write-Host "nuro — minimal runner v0.0.9`n"
     Write-Host "USAGE:"
     Write-Host "  nuro <command> [args...]"
     Write-Host "  nuro <command> -h|--help|/?`n"
