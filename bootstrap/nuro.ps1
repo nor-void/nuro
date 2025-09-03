@@ -25,7 +25,7 @@ function Invoke-RemoteCmd {
   }
 
   # リモート取得（キャッシュ回避ヘッダ）
-  $url = "$Base/cmds/$safe.ps1"
+  $url = "$Base/cmds/$safe.ps1?cb=$([Guid]::NewGuid())"
   $H = @{
     'Cache-Control' = 'no-cache'
     'Pragma'        = 'no-cache'
@@ -114,7 +114,7 @@ function Get-AllCommandsUsage {
 
 function nuro {
   if ($args.Count -eq 0) {
-    Write-Host "nuro — minimal runner v0.5`n"
+    Write-Host "nuro — minimal runner v0.0.6`n"
     Write-Host "USAGE:"
     Write-Host "  nuro <command> [args...]"
     Write-Host "  nuro <command> -h|--help|/?`n"
@@ -126,7 +126,7 @@ function nuro {
   }
   $cmd  = $args[0]
   $rest = if ($args.Count -gt 1) { $args[1..($args.Count-1)] } else { @() }
-  Invoke-RemoteCmd -Name $cmd -Args $rest
+  Invoke-RemoteCmd -Name $cmd -Args @rest
 }
 
 if (-not $env:NURO_SILENT -or $env:NURO_SILENT -eq '0') {
