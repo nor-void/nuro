@@ -1,0 +1,20 @@
+{
+  "buckets": [
+    {
+      "name": "official",
+      "uri": "github::mr-certain-a/nuro@refs/heads/main",
+      "priority": 100,
+      "trusted": true
+    },
+    {
+      "name": "localtest",
+      "uri": "local::G:\\\\git-nor\\\\nuro\\\\cmds",
+      "priority": 200,
+      "trusted": true
+    }
+  ],
+  "pins": {
+    "bucket": "localtest",
+    "time": "localtest"
+  }
+}
