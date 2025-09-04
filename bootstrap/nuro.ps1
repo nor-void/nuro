@@ -2,7 +2,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Ver = "0.0.17"
+$Ver = "0.0.18"
 
 if ($env:NURO_DEBUG -eq '1') {
   echo "debug nuro v$Ver"
@@ -27,28 +27,76 @@ $NURO_HOME   = Join-Path ($env:USERPROFILE ?? $HOME) ".nuro"
 $NURO_CONFIG = Join-Path $NURO_HOME "config"
 $BUCKET_FILE = Join-Path $NURO_CONFIG "buckets.json"
 
-function Initialize-NuroRegistry {
-  if (-not (Test-Path $NURO_CONFIG)) { New-Item -ItemType Directory -Path $NURO_CONFIG | Out-Null }
-  if (-not (Test-Path $BUCKET_FILE)) {
-    $ref = $env:NURO_REF
-    $mainRef = if ($ref -and $ref -match '^[vV]\d') { "refs/tags/$ref" } else { "refs/heads/main" }
-    $obj = @{
-      buckets = @(
-        @{ name='official'; uri=("github::mr-certain-a/nuro@{0}" -f $mainRef); priority=100; trusted=$true }
-      )
-      pins = @{}
-    }
-    $obj | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $BUCKET_FILE
+function Get-NuroDefaultRegistry {
+  # 環境変数でタグ固定したい場合に official を tags に切替
+  $ref = $env:NURO_REF
+  $mainRef = if ($ref -and $ref -match '^[vV]\d') { "refs/tags/$ref" } else { "refs/heads/main" }
+  [pscustomobject]@{
+    buckets = @(
+      [pscustomobject]@{
+        name     = 'official'
+        uri      = "github::mr-certain-a/nuro@$mainRef"
+        priority = 100
+        trusted  = $true
+      }
+    )
+    pins = [pscustomobject]@{}
   }
 }
-function Load-NuroRegistry { Initialize-NuroRegistry; Get-Content $BUCKET_FILE -Raw | ConvertFrom-Json }
-function Save-NuroRegistry($obj) { ($obj | ConvertTo-Json -Depth 5) | Set-Content -Encoding UTF8 $BUCKET_FILE }
 
+function Initialize-NuroRegistry {
+  if (-not (Test-Path $NURO_HOME))   { New-Item -ItemType Directory -Path $NURO_HOME   | Out-Null }
+  if (-not (Test-Path $NURO_CONFIG)) { New-Item -ItemType Directory -Path $NURO_CONFIG | Out-Null }
+  if (-not (Test-Path $BUCKET_FILE)) {
+    $def = Get-NuroDefaultRegistry
+    ($def | ConvertTo-Json -Depth 6) | Set-Content -Encoding UTF8 $BUCKET_FILE
+  }
+}
+
+function Save-NuroRegistry([object]$obj) {
+  # pins/buckets の null を許さない
+  if ($null -eq $obj) { $obj = Get-NuroDefaultRegistry }
+  if ($null -eq $obj.pins)    { $obj | Add-Member -NotePropertyName pins    -NotePropertyValue ([pscustomobject]@{}) -Force }
+  if ($null -eq $obj.buckets) { $obj | Add-Member -NotePropertyName buckets -NotePropertyValue @()                  -Force }
+  ($obj | ConvertTo-Json -Depth 6) | Set-Content -Encoding UTF8 $BUCKET_FILE
+}
+
+function Load-NuroRegistry {
+  Initialize-NuroRegistry
+  try {
+    $raw = Get-Content $BUCKET_FILE -Raw -Encoding UTF8
+    $reg = $raw | ConvertFrom-Json
+    # 破損／キー欠落の自己修復
+    if ($null -eq $reg) { throw "empty json" }
+    if ($null -eq $reg.buckets) { $reg | Add-Member -NotePropertyName buckets -NotePropertyValue @() -Force }
+    if ($null -eq $reg.pins)    { $reg | Add-Member -NotePropertyName pins    -NotePropertyValue ([pscustomobject]@{}) -Force }
+
+    # buckets が文字列配列化していた場合の救済
+    if ($reg.buckets -is [System.Array] -and $reg.buckets.Count -gt 0 -and $reg.buckets[0] -is [string]) {
+      $reg.buckets = @(
+        foreach ($s in $reg.buckets) {
+          [pscustomobject]@{ name = ($s -replace '[:/\\]','_'); uri = $s; priority = 50; trusted = $false }
+        }
+      )
+    }
+
+    return $reg
+  }
+  catch {
+    # 壊れてたら初期化して戻す
+    $def = Get-NuroDefaultRegistry
+    Save-NuroRegistry $def
+    return $def
+  }
+}
+
+#================================================================================
 # uri 形式:
 #  - github::owner/repo@<ref>   （ref=refs/heads/.. / refs/tags/.. / <sha>）
 #  - raw::https://host/base     （<base>/<cmd>.ps1 を取りに行く）
 #  - local::<absolute_path>     （<path>\<cmd>.ps1 を読む）
 #  - それ以外（絶対/相対パス）は local 扱いに自動補正
+#================================================================================
 function Parse-BucketUri([string]$uri) {
   if ($uri -like 'github::*') {
     $spec = $uri.Substring(8) # owner/repo@ref
@@ -121,7 +169,9 @@ function Run-FromBucket([string]$bucketUri,[string]$cmd,[string[]]$tokens) {
   if ($null -ne $res) { Write-Output $res }
 }
 
+#================================================================================
 # --- Args配列を名前付き引数ハッシュに変換 ---
+#================================================================================
 function Convert-ArgsToHash {
   param(
     [string]  $TargetFn,   # 例: 'NuroCmd_get'
@@ -179,11 +229,46 @@ function Convert-ArgsToHash {
   return $map
 }
 
+#================================================================================
+# Debug-ShowPins
+#================================================================================
+function Debug-ShowPins {
+Write-Host "point 0"
+    param($reg)
+
+    if ($env:NURO_DEBUG -ne '1') { return }
+
+Write-Host "point 1"
+
+    if (-not $reg) { Write-Host "[pins] reg is null"; return }
+Write-Host "point 2"
+    if (-not $reg.pins) { Write-Host "[pins] reg.pins is null"; return }
+Write-Host "point 3"
+
+    Write-Host "[pins] keys:" ($reg.pins.PSObject.Properties.Name -join ', ')
+
+    foreach ($p in $reg.pins.PSObject.Properties) {
+        Write-Host ("  {0} = {1}" -f $p.Name, $p.Value)
+    }
+
+Write-Host "point 4"
+    # JSONで俯瞰したいとき
+    Write-Host "[pins json]"
+    $reg.pins | ConvertTo-Json -Depth 3
+Write-Host "point 5"
+}
+
+#================================================================================
+# Invoke-RemoteCmd
+#================================================================================
 function Invoke-RemoteCmd {
   param(
     [Parameter(Mandatory=$true)][string]$Name,
     [string[]]$Args
   )
+
+  if ($null -eq $Args) { $Args = @() } else { $Args = @($Args) }
+
   if ($env:NURO_DEBUG -eq '1') {
       Write-Host "[nuro:Invoke-RemoteCmd] Name = $Name"
       Write-Host "[nuro:Invoke-RemoteCmd] Args.Count = $($Args.Count)"
@@ -197,23 +282,35 @@ function Invoke-RemoteCmd {
   if ($Name -match '^([^:]+):([^:]+)$') { $bucketHint = $Matches[1]; $cmd = $Matches[2] }
 
   $reg = Load-NuroRegistry
+Write-Host "Load-NuroRegistry OK."
 
+  Debug-ShowPins $reg
+
+Write-Host "reg.pins.PSObject.Properties.Name=$reg.pins.PSObject.Properties.Name"
+Write-Host "bucketHint=$bucketHint"
+Write-Host "cmd=$cmd"
+
+Write-Host "pin resolve"
   # pin 優先
   if (-not $bucketHint -and $reg.pins.PSObject.Properties.Name -contains $cmd) {
+Write-Host "ここにはいれる？"
     $bucketHint = $reg.pins.$cmd
   }
 
+Write-Host "bucketHint=$bucketHint"
   if ($bucketHint) {
     $b = $reg.buckets | Where-Object { $_.name -eq $bucketHint }
     if (-not $b) { throw "bucket '$bucketHint' not found" }
     return (Run-FromBucket -bucketUri $b.uri -cmd $cmd -tokens $Args)
   }
 
+Write-Host "priority desc"
   # 候補列: priority desc
   $cands = $reg.buckets | Sort-Object -Property @{Expression='priority';Descending=$true}
   $errors = @()
   foreach ($b in $cands) {
     try {
+Write-Host "call Run-FromBucket "
       return (Run-FromBucket -bucketUri $b.uri -cmd $cmd -tokens $Args)
     } catch {
       $errors += "  - $($b.name): $($_.Exception.Message.Split("`n")[0])"
