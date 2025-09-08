@@ -269,7 +269,7 @@ try {
 try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
 
 # =====================================
-# Create shims under ~/.nuro/bin (nuro)
+# Create shim under ~/.nuro/bin (nuro.cmd only)
 # =====================================
 
 function Write-FileUtf8NoBom([string]$Path, [string]$Content) {
@@ -292,33 +292,18 @@ $shimCmdLines = @(
   '  echo [nuro.cmd] still missing venv; aborting. 1>&2',
   '  exit /b 1',
   ')',
+  'if "%~1"=="" (',
+  '  "%_PY%" -m nuro --help',
+  '  exit /b %ERRORLEVEL%',
+  ')',
   '"%_PY%" -m nuro %*',
   'exit /b %ERRORLEVEL%'
 )
 $shimCmd = ($shimCmdLines -join "`r`n")
 
-$shimPs1Lines = @(
-  'param([string[]]$args)',
-  '$usr = $env:USERPROFILE; if (-not $usr) { $usr = $HOME }; if (-not $usr) { $usr = [Environment]::GetFolderPath(''UserProfile'') }',
-  '$NURO_HOME = Join-Path $usr ''.nuro''',
-  '$py = Join-Path $NURO_HOME ''venv/Scripts/python.exe''',
-  'if (-not (Test-Path $py)) {',
-  '  $get = Join-Path $NURO_HOME ''bootstrap/get.nuro.ps1''',
-  '  if (Test-Path $get) {',
-  '    try { pwsh -NoProfile -ExecutionPolicy Bypass -File $get } catch { }',
-  '  }',
-  '}',
-  'if (-not (Test-Path $py)) { Write-Error "[nuro.ps1] venv python not found: $py"; exit 1 }',
-  '& $py -m nuro @args',
-  'exit $LASTEXITCODE'
-)
-$shimPs1 = ($shimPs1Lines -join "`r`n")
-
 $cmdPath = Join-Path $BIN_DIR 'nuro.cmd'
-$ps1Path = Join-Path $BIN_DIR 'nuro.ps1'
 Write-FileUtf8NoBom -Path $cmdPath -Content $shimCmd
-Write-FileUtf8NoBom -Path $ps1Path -Content $shimPs1
-Write-Host "[get.nuro] shims created: $cmdPath, $ps1Path"
+Write-Host "[get.nuro] shim created: $cmdPath"
 
 # =====================================
 # Add ~/.nuro/bin to PATH (user + session)
