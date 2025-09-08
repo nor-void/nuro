@@ -20,8 +20,10 @@ function Normalize-Ref([string]$r) {
   return $r
 }
 
-# Root under ~/.nuro only
-$HOME_DIR   = ($env:USERPROFILE ?? $HOME)
+# Root under ~/.nuro only (avoid PowerShell 7 '??' for PS5.1 compatibility)
+$HOME_DIR = $env:USERPROFILE
+if (-not $HOME_DIR) { $HOME_DIR = $HOME }
+if (-not $HOME_DIR) { $HOME_DIR = [Environment]::GetFolderPath('UserProfile') }
 $NURO_HOME  = Join-Path $HOME_DIR '.nuro'
 $BOOT_DIR   = Join-Path $NURO_HOME 'bootstrap'
 $TMP_DIR    = Join-Path $NURO_HOME 'tmp'
@@ -84,13 +86,13 @@ function Get-PythonCandidates {
   $cands = New-Object System.Collections.Generic.HashSet[string]
   foreach ($name in @('python','python3')) {
     $cmds = Get-Command $name -ErrorAction SilentlyContinue
-    foreach ($c in ($cmds ?? @())) { if ($c.Source) { [void]$cands.Add($c.Source) } }
+    foreach ($c in @($cmds)) { if ($c.Source) { [void]$cands.Add($c.Source) } }
   }
   $py = Get-Command 'py' -ErrorAction SilentlyContinue
   if ($py) {
     try {
       $lines = & $py.Source '-0p' 2>$null
-      foreach ($ln in ($lines ?? @())) {
+      foreach ($ln in @($lines)) {
         $p = $ln.Trim()
         if ($p -and (Test-Path $p)) { [void]$cands.Add($p) }
       }
@@ -160,7 +162,7 @@ try {
 
 function Get-UvDefaultUri {
   if ($UvUri) { return $UvUri }
-  $arch = ($env:PROCESSOR_ARCHITECTURE ?? '').ToLowerInvariant()
+  $arch = ([string]$env:PROCESSOR_ARCHITECTURE).ToLowerInvariant()
   $triple = switch ($arch) {
     'arm64' { 'aarch64-pc-windows-msvc' }
     default { 'x86_64-pc-windows-msvc' }
@@ -297,7 +299,8 @@ $shimCmd = ($shimCmdLines -join "`r`n")
 
 $shimPs1Lines = @(
   'param([string[]]$args)',
-  '$NURO_HOME = Join-Path ($env:USERPROFILE ?? $HOME) ''.nuro''',
+  '$usr = $env:USERPROFILE; if (-not $usr) { $usr = $HOME }; if (-not $usr) { $usr = [Environment]::GetFolderPath(''UserProfile'') }',
+  '$NURO_HOME = Join-Path $usr ''.nuro''',
   '$py = Join-Path $NURO_HOME ''venv/Scripts/python.exe''',
   'if (-not (Test-Path $py)) {',
   '  $get = Join-Path $NURO_HOME ''bootstrap/get.nuro.ps1''',
