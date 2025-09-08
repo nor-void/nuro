@@ -251,7 +251,10 @@ function Install-Nuro {
       if ($LASTEXITCODE -ne 0) { throw "pip install -e failed ($LASTEXITCODE)" }
       # Log HEAD short SHA if git available
       if ($git -and (Test-Path (Join-PathSafe $dst '.git'))) {
-        try { $sha = (& $git.Source '-C' $dst 'rev-parse' '--short' 'HEAD').Trim(); if ($sha) { Log ("dev HEAD=\"{0}\"" -f $sha) } } catch { }
+        try {
+          $sha = (& $git.Source '-C' $dst 'rev-parse' '--short' 'HEAD').Trim()
+          if ($sha) { Log ('dev HEAD="{0}"' -f $sha) }
+        } catch { }
       }
     }
   }
