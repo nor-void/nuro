@@ -50,7 +50,6 @@ function Show-AdminTools {
         @{ Name = "sysdm.cpl         – システムのプロパティ";               Cmd = "sysdm.cpl" }
         @{ Name = "nusrmgr.cpl       – ユーザー アカウント (レガシ UI)";     Cmd = "nusrmgr.cpl" }
     )
-        $items += @{ Name = "OptionalFeatures  – Windows の機能の有効化または無効化 (GUI)"; Cmd = "OptionalFeatures.exe" }
 
     if ($ListOnly) {
         Write-Host "=== 管理ツール一覧 (.msc / .cpl) ===" -ForegroundColor Cyan
@@ -66,22 +65,35 @@ function Show-AdminTools {
     # Check ANSI support (fallback to colors if not supported)
     $supportsAnsi = $Host.UI.RawUI -and ($Host.UI.SupportsVirtualTerminal -or $env:WT_SESSION -or $env:ConEmuANSI -or $Host.Name -match "VSCode")
 
-    function Draw {
-        Clear-Host
-        Write-Host "=== Admin Tools (.msc / .cpl) ===" -ForegroundColor Cyan
-        Write-Host $topMsg -ForegroundColor DarkGray
+    # 画面全消去はせず、描画領域のみ上書きする
+    $renderedLines = 0
+    $startPos = $null
+
+    <#PLACEHOLDER#>
+        }
+
+        $count = 0
+        Write-Host "=== 管理ツール一覧 (.msc / .cpl) ===" -ForegroundColor Cyan; $count++
+        Write-Host $topMsg -ForegroundColor DarkGray; $count++
+
         for ($i=0; $i -lt $items.Count; $i++) {
             $line = $items[$i].Name
             if ($i -eq $idx) {
                 if ($supportsAnsi) {
-                    Write-Host "$esc[7m> $line$esc[0m"
+                    Write-Host "$esc[7m> $line$esc[0m"; $count++
                 } else {
-                    Write-Host ("> " + $line) -ForegroundColor Black -BackgroundColor White
+                    Write-Host ("> " + $line) -ForegroundColor Black -BackgroundColor White; $count++
                 }
             } else {
-                Write-Host "  $line"
+                Write-Host "  $line"; $count++
             }
         }
+
+        if ($renderedLines -eq 0 -and -not $supportsAnsi) {
+            try { $startPos = $host.UI.RawUI.CursorPosition; $startPos.Y -= $count } catch {}
+        }
+
+        $renderedLines = $count
     }
 
     Draw
@@ -115,3 +127,4 @@ function Show-AdminTools {
 if ($MyInvocation.InvocationName -ne '.') {
     Show-AdminTools -ListOnly:$ListOnly
 }
+
