@@ -293,8 +293,11 @@ $shimCmdLines = @(
   '  exit /b 1',
   ')',
   'if "%~1"=="" (',
-  '  "%_PY%" -m nuro --help',
-  '  exit /b %ERRORLEVEL%',
+  '  echo Nuro CLI',
+  '  echo Usage: nuro [subcommand] [options]',
+  '  echo - This prints basic usage without requiring the Python package.',
+  '  echo - Once the nuro package is installed, run: nuro --help',
+  '  exit /b 0',
   ')',
   '"%_PY%" -m nuro %*',
   'exit /b %ERRORLEVEL%'
@@ -304,6 +307,43 @@ $shimCmd = ($shimCmdLines -join "`r`n")
 $cmdPath = Join-Path $BIN_DIR 'nuro.cmd'
 Write-FileUtf8NoBom -Path $cmdPath -Content $shimCmd
 Write-Host "[get.nuro] shim created: $cmdPath"
+
+# =====================================
+# Install/Update nuro package into venv
+# =====================================
+
+function Install-NuroPackage {
+  param(
+    [Parameter(Mandatory)] [string]$VenvPython,
+    [string]$UvExe
+  )
+  Write-Host "[get.nuro] ensuring nuro package in venv"
+  if ($UvExe -and (Test-Path $UvExe)) {
+    & $UvExe 'pip' 'install' '--python' $VenvPython '--upgrade' 'pip' 'setuptools' 'wheel'
+    if ($LASTEXITCODE -ne 0) { throw "uv pip upgrade failed with exit code $LASTEXITCODE" }
+    & $UvExe 'pip' 'install' '--python' $VenvPython '-U' 'nuro'
+    if ($LASTEXITCODE -ne 0) { throw "uv pip install nuro failed with exit code $LASTEXITCODE" }
+  } else {
+    & $VenvPython '-m' 'pip' 'install' '--upgrade' 'pip' 'setuptools' 'wheel'
+    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed with exit code $LASTEXITCODE" }
+    & $VenvPython '-m' 'pip' 'install' '-U' 'nuro'
+    if ($LASTEXITCODE -ne 0) { throw "pip install nuro failed with exit code $LASTEXITCODE" }
+  }
+}
+
+try {
+  $venvPy = Join-Path $VENV_DIR 'Scripts/python.exe'
+  if (Test-Path $venvPy) {
+    $uvPath = $null
+    try { $uvPath = (Get-Content -Path (Join-Path $CONF_DIR 'uv.json') -Raw | ConvertFrom-Json).path } catch { }
+    Install-NuroPackage -VenvPython $venvPy -UvExe $uvPath
+    Write-Host "[get.nuro] nuro package installed/updated"
+  } else {
+    Write-Host "[get.nuro] skip nuro install: venv python not found"
+  }
+} catch {
+  Write-Host "[get.nuro] nuro install failed: $($_.Exception.Message)"
+}
 
 # =====================================
 # Add ~/.nuro/bin to PATH (user + session)
