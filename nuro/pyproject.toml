@@ -1,0 +1,15 @@
+ [build-system]
+ requires = ["setuptools>=68", "wheel"]
+ build-backend = "setuptools.build_meta"
+
+ [project]
+ name = "nuro"
+ version = "0.0.0"
+ description = "nuro placeholder"
+ readme = "README.md"
+ requires-python = ">=3.8"
+ authors = [{ name = "nuro" }]
+
+ [project.scripts]
+ nuro = "nuro.cli:main"
+

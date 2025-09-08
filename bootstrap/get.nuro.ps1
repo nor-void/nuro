@@ -1,87 +1,48 @@
-# bootstrap/get.nuro.ps1
 param(
-  [string]$Ref = $env:NURO_REF,
-  [string]$Owner = 'mr-certain-a',
-  [string]$Repo  = 'nuro',
-  [switch]$Force,
-  [int]$TimeoutSec = 60,
-  [string]$Sha256,
-  [string]$UvUri,
-  [string]$VenvSpec = '3.12'
+  [ValidateSet('prod','test','dev')][string]$Channel = 'prod',
+  [string]$Version,
+  [string]$Repo = 'https://github.com/OWNER/REPO.git',
+  [string]$Branch = 'codex'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-function Normalize-Ref([string]$r) {
-  if (-not $r) { return 'main' }
-  if ($r -like 'refs/heads/*') { return $r.Substring(11) }
-  if ($r -like 'refs/tags/*')  { return $r.Substring(10) }
-  return $r
+# ------------------------
+# Helpers / Environment
+# ------------------------
+function Get-Home {
+  $h = $env:USERPROFILE
+  if (-not $h) { $h = $HOME }
+  if (-not $h) { $h = [Environment]::GetFolderPath('UserProfile') }
+  return $h
 }
 
-# Root under ~/.nuro only (avoid PowerShell 7 '??' for PS5.1 compatibility)
-$HOME_DIR = $env:USERPROFILE
-if (-not $HOME_DIR) { $HOME_DIR = $HOME }
-if (-not $HOME_DIR) { $HOME_DIR = [Environment]::GetFolderPath('UserProfile') }
-$NURO_HOME  = Join-Path $HOME_DIR '.nuro'
-$BOOT_DIR   = Join-Path $NURO_HOME 'bootstrap'
-$TMP_DIR    = Join-Path $NURO_HOME 'tmp'
-$CONF_DIR   = Join-Path $NURO_HOME 'config'
-$BIN_DIR    = Join-Path $NURO_HOME 'bin'
-$VENV_DIR   = Join-Path $NURO_HOME 'venv'
-$LOGS_DIR   = Join-Path $NURO_HOME 'logs'
+function Join-PathSafe([string]$a, [string]$b) { return (Join-Path $a $b) }
 
-# Ensure directories
-foreach ($d in @($NURO_HOME, $BOOT_DIR, $TMP_DIR, $CONF_DIR, $BIN_DIR, $LOGS_DIR)) {
-  if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
-}
+$HOME_DIR = Get-Home
+$NURO_HOME = Join-PathSafe $HOME_DIR '.nuro'
+$BIN_DIR  = Join-PathSafe $NURO_HOME 'bin'
+$LOGS_DIR = Join-PathSafe $NURO_HOME 'logs'
+$SRC_DIR  = Join-PathSafe $NURO_HOME 'src'
+$VENV_DIR = Join-PathSafe $NURO_HOME 'venv'
+$VENV_PY  = Join-PathSafe (Join-PathSafe $VENV_DIR 'Scripts') 'python.exe'
+$LOG_FILE = Join-PathSafe $LOGS_DIR 'get.nuro.log'
 
-# Per-run log file under ~/.nuro/logs
-$__logFile = Join-Path $LOGS_DIR ("get.nuro." + (Get-Date -Format 'yyyyMMdd') + ".log")
-try { Start-Transcript -Path $__logFile -Append -ErrorAction SilentlyContinue | Out-Null } catch { }
+function Ensure-Dir([string]$p) { if (-not (Test-Path $p)) { New-Item -ItemType Directory -Path $p | Out-Null } }
 
-$ref = Normalize-Ref $Ref
-$base = "https://raw.githubusercontent.com/$Owner/$Repo/$ref"
-$src  = "$base/bootstrap/nuro.ps1"
-$dst  = Join-Path $BOOT_DIR 'nuro.ps1'
+Ensure-Dir $NURO_HOME
+Ensure-Dir $BIN_DIR
+Ensure-Dir $LOGS_DIR
+Ensure-Dir $SRC_DIR
 
-Write-Host "[get.nuro] target: $dst"
-$__resultPath = $dst
+try { Start-Transcript -Path $LOG_FILE -Append -ErrorAction SilentlyContinue | Out-Null } catch { }
 
-if ((Test-Path $dst) -and -not $Force) {
-  Write-Host "[get.nuro] exists (use -Force to overwrite)"
-} else {
+function Log([string]$m) { Write-Host "[get.nuro] $m" }
 
-# Use ~/.nuro/tmp for temp file (avoid system temp)
-$tmp = Join-Path $TMP_DIR ([IO.Path]::GetRandomFileName())
-try {
-  Write-Host "[get.nuro] downloading: $src"
-  Invoke-WebRequest -Uri $src -OutFile $tmp -TimeoutSec $TimeoutSec -UseBasicParsing | Out-Null
-
-  if ($Sha256) {
-    $actual = (Get-FileHash -Algorithm SHA256 -Path $tmp).Hash.ToLowerInvariant()
-    if ($actual -ne $Sha256.ToLowerInvariant()) {
-      Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-      throw "SHA256 mismatch. expected=$Sha256 actual=$actual"
-    }
-  }
-
-  Move-Item -Force $tmp $dst
-  Write-Host "[get.nuro] saved: $dst"
-  Write-Host "[get.nuro] usage: . $dst ; nuro"
-}
-catch {
-  Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-  throw
-}
-
-}
-
-# =============================
-# Python detection (>= 3.10)
-# =============================
-
+# ------------------------
+# Python detection (>=3.10 with venv/ensurepip)
+# ------------------------
 function Get-PythonCandidates {
   $cands = New-Object System.Collections.Generic.HashSet[string]
   foreach ($name in @('python','python3')) {
@@ -92,35 +53,27 @@ function Get-PythonCandidates {
   if ($py) {
     try {
       $lines = & $py.Source '-0p' 2>$null
-      foreach ($ln in @($lines)) {
-        $p = $ln.Trim()
-        if ($p -and (Test-Path $p)) { [void]$cands.Add($p) }
-      }
-      try {
-        $p310 = & $py.Source '-3.10' '-c' 'import sys;print(sys.executable)' 2>$null
-        if ($p310 -and (Test-Path $p310)) { [void]$cands.Add($p310) }
-      } catch { }
+      foreach ($ln in @($lines)) { $p = $ln.Trim(); if ($p -and (Test-Path $p)) { [void]$cands.Add($p) } }
+      try { $p310 = & $py.Source '-3.10' '-c' 'import sys;print(sys.executable)' 2>$null; if ($p310 -and (Test-Path $p310)) { [void]$cands.Add($p310) } } catch { }
     } catch { }
   }
   return @($cands)
 }
 
 function Probe-PythonVersion([string]$exe) {
-  try {
-    $out = & $exe '--version' 2>&1
-    if ($out -match 'Python\s+([0-9]+)\.([0-9]+)\.?(\d+)?') {
-      $maj = [int]$Matches[1]; $min = [int]$Matches[2]; $pat = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
-      return [pscustomobject]@{ Path = $exe; Major=$maj; Minor=$min; Patch=$pat; Version = "${maj}.${min}.${pat}" }
-    }
-  } catch { }
+  try { $out = & $exe '--version' 2>&1 } catch { return $null }
+  if ($out -match 'Python\s+([0-9]+)\.([0-9]+)\.?(\d+)?') {
+    $maj = [int]$Matches[1]; $min = [int]$Matches[2]; $pat = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
+    return [pscustomobject]@{ Path=$exe; Major=$maj; Minor=$min; Patch=$pat; Version = "${maj}.${min}.${pat}" }
+  }
   return $null
 }
 
 function Test-PythonFeatures([string]$exe) {
   $venv_ok = $false; $ensurepip_ok = $false
-  try { $null = & $exe '-c' 'import venv' 2>$null; if ($LASTEXITCODE -eq 0) { $venv_ok = $true } } catch { $venv_ok = $false }
-  try { $null = & $exe '-m' 'ensurepip' '--version' 2>$null; if ($LASTEXITCODE -eq 0) { $ensurepip_ok = $true } } catch { $ensurepip_ok = $false }
-  return [pscustomobject]@{ venv_ok = $venv_ok; ensurepip_ok = $ensurepip_ok }
+  try { $null = & $exe '-c' 'import venv' 2>$null; if ($LASTEXITCODE -eq 0) { $venv_ok = $true } } catch { }
+  try { $null = & $exe '-m' 'ensurepip' '--version' 2>$null; if ($LASTEXITCODE -eq 0) { $ensurepip_ok = $true } } catch { }
+  return [pscustomobject]@{ venv_ok=$venv_ok; ensurepip_ok=$ensurepip_ok }
 }
 
 function Select-UsablePython {
@@ -135,220 +88,200 @@ function Select-UsablePython {
     }
   }
   if (-not $infos) { return $null }
-  # Prefer highest version meeting >= 3.10
-  $minMajor = 3; $minMinor = 10
-  $eligible = $infos | Where-Object { ($_.Major -gt $minMajor -or ($_.Major -eq $minMajor -and $_.Minor -ge $minMinor)) -and $_.venv_ok -and $_.ensurepip_ok }
+  $eligible = $infos | Where-Object { ($_.Major -gt 3 -or ($_.Major -eq 3 -and $_.Minor -ge 10)) -and $_.venv_ok -and $_.ensurepip_ok }
   if (-not $eligible) { return $null }
   return ($eligible | Sort-Object -Property @{Expression='Major';Descending=$true}, @{Expression='Minor';Descending=$true}, @{Expression='Patch';Descending=$true})[0]
 }
 
-try {
-  $py = Select-UsablePython
-  $state = if ($py) {
-    Write-Host ("[get.nuro] python OK: {0} (v{1})" -f $py.Path, $py.Version)
-    [pscustomobject]@{ path = $py.Path; version = $py.Version; source = 'system'; min_ok = $true; venv_ok = $py.venv_ok; ensurepip_ok = $py.ensurepip_ok }
-  } else {
-    Write-Host "[get.nuro] python not found or < 3.10 or missing venv/ensurepip"
-    [pscustomobject]@{ path = $null; version = $null; source = 'absent'; min_ok = $false; venv_ok = $false; ensurepip_ok = $false }
-  }
-  $state | ConvertTo-Json -Depth 4 | Set-Content -Path (Join-Path $CONF_DIR 'python.json') -Encoding UTF8
-} catch {
-  Write-Host "[get.nuro] python detection failed: $($_.Exception.Message)"
-}
-
-# ======================================================
-# If Python is not usable, fetch uv.exe under ~/.nuro/bin
-# ======================================================
-
-function Get-UvDefaultUri {
-  if ($UvUri) { return $UvUri }
+# ------------------------
+# uv.exe handling
+# ------------------------
+function Get-UvUri {
   $arch = ([string]$env:PROCESSOR_ARCHITECTURE).ToLowerInvariant()
-  $triple = switch ($arch) {
-    'arm64' { 'aarch64-pc-windows-msvc' }
-    default { 'x86_64-pc-windows-msvc' }
-  }
+  $triple = switch ($arch) { 'arm64' { 'aarch64-pc-windows-msvc' } default { 'x86_64-pc-windows-msvc' } }
   return "https://github.com/astral-sh/uv/releases/latest/download/uv-$triple.zip"
 }
 
-function Install-Uv {
-  param([string]$Uri)
-
-  $tmpZip  = Join-Path $TMP_DIR ("uv-" + [IO.Path]::GetRandomFileName() + '.zip')
-  $tmpDir  = Join-Path $TMP_DIR ("uv-" + [IO.Path]::GetRandomFileName())
-  $destExe = Join-Path $BIN_DIR 'uv.exe'
-
+function Ensure-Uv {
+  $uvExe = Join-PathSafe $BIN_DIR 'uv.exe'
+  if (Test-Path $uvExe) { return $uvExe }
+  $uri = Get-UvUri
+  $tmpZip = Join-PathSafe $NURO_HOME ("uv-" + [IO.Path]::GetRandomFileName() + '.zip')
+  $tmpDir = Join-PathSafe $NURO_HOME ("uv-" + [IO.Path]::GetRandomFileName())
+  Log "downloading uv: $uri"
+  Invoke-WebRequest -Uri $uri -OutFile $tmpZip -UseBasicParsing -TimeoutSec 120 | Out-Null
   try {
-    Write-Host "[get.nuro] downloading uv: $Uri"
-    Invoke-WebRequest -Uri $Uri -OutFile $tmpZip -TimeoutSec $TimeoutSec -UseBasicParsing | Out-Null
-
-    try {
-      Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
-    } catch {
-      # In case it's a direct exe, move it
-      if ((Split-Path $tmpZip -Leaf) -like '*.exe') {
-        Move-Item -Force $tmpZip $destExe
-        return $destExe
-      } else { throw }
-    }
-
+    Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
     $uv = Get-ChildItem -Path $tmpDir -Recurse -Filter 'uv.exe' | Select-Object -First 1
     if (-not $uv) { throw 'uv.exe not found in archive' }
-    Move-Item -Force $uv.FullName $destExe
-    Write-Host "[get.nuro] uv saved: $destExe"
-    return $destExe
-  }
-  finally {
+    Move-Item -Force $uv.FullName $uvExe
+  } finally {
     Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
   }
+  Log "uv ready: $uvExe"
+  return $uvExe
 }
 
-try {
-  $pyState = Get-Content -Path (Join-Path $CONF_DIR 'python.json') -Raw | ConvertFrom-Json
-  # Ensure uv is present when python is not usable OR when we need to bootstrap a venv
-  if (-not $pyState.min_ok -or -not (Test-Path (Join-Path $VENV_DIR 'Scripts/python.exe'))) {
-    $uri = Get-UvDefaultUri
-    $exe = Install-Uv -Uri $uri
-    $ver = $null
-    try { $ver = (& $exe '--version' 2>$null) } catch { }
-    $uvState = [pscustomobject]@{ path = $exe; version = $ver; source = 'download'; ok = $true }
-    $uvState | ConvertTo-Json -Depth 4 | Set-Content -Path (Join-Path $CONF_DIR 'uv.json') -Encoding UTF8
-  }
-} catch {
-  Write-Host "[get.nuro] uv download skipped/failed: $($_.Exception.Message)"
-}
-
-# ===============================================
-# Create ~/.nuro/venv using uv when Python unusable
-# ===============================================
-
-function New-UvVenv {
-  param(
-    [Parameter(Mandatory)] [string]$UvExe,
-    [Parameter(Mandatory)] [string]$TargetDir,
-    [Parameter(Mandatory)] [string]$PythonSpec
-  )
-  if ((Test-Path (Join-Path $TargetDir 'Scripts/python.exe'))) {
-    Write-Host "[get.nuro] venv already exists: $TargetDir"
-    return (Join-Path $TargetDir 'Scripts/python.exe')
-  }
-  Write-Host "[get.nuro] creating venv via uv: python=$PythonSpec dir=$TargetDir"
-  $args = @('venv','--python', $PythonSpec, $TargetDir)
-  & $UvExe @args
-  if ($LASTEXITCODE -ne 0) { throw "uv venv failed with exit code $LASTEXITCODE" }
-  $venvPy = Join-Path $TargetDir 'Scripts/python.exe'
-  if (-not (Test-Path $venvPy)) { throw 'venv python not found after uv venv' }
-  return $venvPy
-}
-
-try {
-  if (-not (Test-Path (Join-Path $VENV_DIR 'Scripts/python.exe'))) {
-    $uv = $null
-    try { $uv = (Get-Content -Path (Join-Path $CONF_DIR 'uv.json') -Raw | ConvertFrom-Json).path } catch { }
-    if (-not $uv -or -not (Test-Path $uv)) { throw 'uv.exe not available' }
-    $venvPy = New-UvVenv -UvExe $uv -TargetDir $VENV_DIR -PythonSpec $VenvSpec
-    $verOut = & $venvPy '--version' 2>&1
-    $venvOk = $false; $pipOk = $false
-    try { $null = & $venvPy '-c' 'import venv' 2>$null; if ($LASTEXITCODE -eq 0) { $venvOk = $true } } catch { }
-    try { $null = & $venvPy '-m' 'ensurepip' '--version' 2>$null; if ($LASTEXITCODE -eq 0) { $pipOk = $true } } catch { }
-    $rec = [pscustomobject]@{ dir = $VENV_DIR; python = $venvPy; version = $verOut; provider = 'uv'; spec = $VenvSpec; venv_ok = $venvOk; ensurepip_ok = $pipOk; ok = ($venvOk -and $pipOk) }
-    $rec | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $CONF_DIR 'venv.json') -Encoding UTF8
-    if (-not $rec.ok) { throw 'created venv failed validation (venv/ensurepip)' }
-    Write-Host "[get.nuro] venv ready: $($rec.python)"
+# ------------------------
+# Venv provisioning
+# ------------------------
+function Ensure-Venv {
+  $py = Select-UsablePython
+  if ($py) {
+    Log ("python OK: {0} (v{1})" -f $py.Path, $py.Version)
+    if (-not (Test-Path $VENV_PY)) {
+      Log "creating venv via system python"
+      & $py.Path '-m' 'venv' $VENV_DIR
+      if ($LASTEXITCODE -ne 0) { throw "python -m venv failed ($LASTEXITCODE)" }
+    }
   } else {
-    $venvPy = Join-Path $VENV_DIR 'Scripts/python.exe'
-    $verOut = & $venvPy '--version' 2>&1
-    $rec = [pscustomobject]@{ dir = $VENV_DIR; python = $venvPy; version = $verOut; provider = 'existing'; spec = $VenvSpec; venv_ok = $true; ensurepip_ok = $true; ok = $true }
-    $rec | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $CONF_DIR 'venv.json') -Encoding UTF8
-    Write-Host "[get.nuro] venv present: $($rec.python)"
+    Log "python not usable; using uv managed python"
+    $uv = Ensure-Uv
+    $spec = '3.12'
+    & $uv 'python' 'install' $spec
+    if ($LASTEXITCODE -ne 0) { throw "uv python install $spec failed ($LASTEXITCODE)" }
+    if (-not (Test-Path $VENV_PY)) {
+      & $uv 'venv' $VENV_DIR
+      if ($LASTEXITCODE -ne 0) { throw "uv venv failed ($LASTEXITCODE)" }
+    }
   }
-} catch {
-  Write-Host "[get.nuro] venv creation skipped/failed: $($_.Exception.Message)"
+  if (-not (Test-Path $VENV_PY)) { throw 'venv python not found' }
+  & $VENV_PY '-m' 'pip' 'install' '--upgrade' 'pip' 'setuptools' 'wheel'
+  if ($LASTEXITCODE -ne 0) { throw "pip bootstrap failed ($LASTEXITCODE)" }
+  Log "venv ready: $VENV_PY"
 }
 
-try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
+# ------------------------
+# Install nuro per channel
+# ------------------------
+function Get-GitHubZipUri([string]$repoUrl, [string]$branch) {
+  $m = [regex]::Match($repoUrl, '^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?$')
+  if (-not $m.Success) { throw "Repo is not a GitHub URL: $repoUrl" }
+  $owner = $m.Groups[1].Value; $name = $m.Groups[2].Value
+  return "https://github.com/$owner/$name/archive/refs/heads/$branch.zip"
+}
 
-# =====================================
-# Create shim under ~/.nuro/bin (nuro.cmd only)
-# =====================================
+function Get-GitHubZipUriByCommit([string]$repoUrl, [string]$commit) {
+  $m = [regex]::Match($repoUrl, '^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?$')
+  if (-not $m.Success) { throw "Repo is not a GitHub URL: $repoUrl" }
+  if (-not ($commit -match '^[0-9a-fA-F]{7,40}$')) { throw "NURO_REF does not look like a commit hash: $commit" }
+  $owner = $m.Groups[1].Value; $name = $m.Groups[2].Value
+  return "https://github.com/$owner/$name/archive/$commit.zip"
+}
 
+function Install-Nuro {
+  switch ($Channel) {
+    'prod' {
+      $pkg = 'nuro'
+      if ($Version) { $pkg = "nuro==${Version}" }
+      Log "pip install -U $pkg"
+      & $VENV_PY '-m' 'pip' 'install' '-U' $pkg
+      if ($LASTEXITCODE -ne 0) { throw "pip install failed ($LASTEXITCODE)" }
+    }
+    'test' {
+      Log "pip install from TestPyPI"
+      & $VENV_PY '-m' 'pip' 'install' '-U' '-i' 'https://test.pypi.org/simple/' 'nuro'
+      if ($LASTEXITCODE -ne 0) { throw "pip install (test) failed ($LASTEXITCODE)" }
+    }
+    'dev' {
+      $dst = Join-PathSafe $SRC_DIR 'nuro'
+      $git = Get-Command 'git' -ErrorAction SilentlyContinue
+      $ref = $env:NURO_REF
+      if ($ref) {
+        # When NURO_REF (commit hash) is provided, fetch exact commit archive from GitHub
+        $zip = Join-PathSafe $NURO_HOME ("nuro-src-" + [IO.Path]::GetRandomFileName() + '.zip')
+        $tmp = Join-PathSafe $NURO_HOME ("nuro-src-" + [IO.Path]::GetRandomFileName())
+        $newTree = Join-PathSafe $NURO_HOME ("nuro-src-new-" + [IO.Path]::GetRandomFileName())
+        $uri = Get-GitHubZipUriByCommit -repoUrl $Repo -commit $ref
+        Log "NURO_REF detected: $ref"
+        Log "downloading commit zip: $uri"
+        Invoke-WebRequest -Uri $uri -OutFile $zip -UseBasicParsing -TimeoutSec 120 | Out-Null
+        try {
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+          $root = Get-ChildItem -Path $tmp | Select-Object -First 1
+          Move-Item -Force $root.FullName $newTree
+          if (Test-Path $dst) { Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue }
+          Move-Item -Force $newTree $dst
+        } finally {
+          Remove-Item -Force $zip -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+          if (Test-Path $newTree) { Remove-Item -Recurse -Force $newTree -ErrorAction SilentlyContinue }
+        }
+      }
+      elseif ($git) {
+        if (Test-Path $dst) {
+          if (Test-Path (Join-PathSafe $dst '.git')) {
+            Log "git fetch/checkout/reset to $Branch"
+            & $git.Source '-C' $dst 'fetch' 'origin' $Branch '--depth' '1'
+            & $git.Source '-C' $dst 'checkout' '-q' $Branch
+            & $git.Source '-C' $dst 'reset' '--hard' "origin/$Branch"
+          } else {
+            Log 'existing non-git tree detected; removing before clone'
+            Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue
+            Log "git clone --branch $Branch $Repo"
+            & $git.Source 'clone' '--branch' $Branch '--depth' '1' $Repo $dst
+          }
+        } else {
+          Log "git clone --branch $Branch $Repo"
+          & $git.Source 'clone' '--branch' $Branch '--depth' '1' $Repo $dst
+        }
+      } else {
+        $zip = Join-PathSafe $NURO_HOME ("nuro-src-" + [IO.Path]::GetRandomFileName() + '.zip')
+        $tmp = Join-PathSafe $NURO_HOME ("nuro-src-" + [IO.Path]::GetRandomFileName())
+        $newTree = Join-PathSafe $NURO_HOME ("nuro-src-new-" + [IO.Path]::GetRandomFileName())
+        $uri = Get-GitHubZipUri -repoUrl $Repo -branch $Branch
+        Log "downloading source zip: $uri"
+        Invoke-WebRequest -Uri $uri -OutFile $zip -UseBasicParsing -TimeoutSec 120 | Out-Null
+        try {
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+          $root = Get-ChildItem -Path $tmp | Select-Object -First 1
+          Move-Item -Force $root.FullName $newTree
+          if (Test-Path $dst) { Remove-Item -Recurse -Force $dst -ErrorAction SilentlyContinue }
+          Move-Item -Force $newTree $dst
+        } finally {
+          Remove-Item -Force $zip -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+          if (Test-Path $newTree) { Remove-Item -Recurse -Force $newTree -ErrorAction SilentlyContinue }
+        }
+      }
+      Log "pip install -e $dst"
+      & $VENV_PY '-m' 'pip' 'install' '-U' 'pip' 'setuptools' 'wheel'
+      & $VENV_PY '-m' 'pip' 'install' '-e' $dst
+      if ($LASTEXITCODE -ne 0) { throw "pip install -e failed ($LASTEXITCODE)" }
+      # Log HEAD short SHA if git available
+      if ($git -and (Test-Path (Join-PathSafe $dst '.git'))) {
+        try { $sha = (& $git.Source '-C' $dst 'rev-parse' '--short' 'HEAD').Trim(); if ($sha) { Log ("dev HEAD=\"{0}\"" -f $sha) } } catch { }
+      }
+    }
+  }
+}
+
+# ------------------------
+# Create shim (cmd only)
+# ------------------------
 function Write-FileUtf8NoBom([string]$Path, [string]$Content) {
   $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
   [IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
-$shimCmdLines = @(
-  '@echo off',
-  'setlocal',
-  'set "_NURO_HOME=%USERPROFILE%\.nuro"',
-  'set "_PY=%_NURO_HOME%\venv\Scripts\python.exe"',
-  'if not exist "%_PY%" (',
-  '  echo [nuro.cmd] venv python not found: %_PY% 1>&2',
-  '  for %%P in (pwsh.exe powershell.exe) do (',
-  '    if exist "%_NURO_HOME%\bootstrap\get.nuro.ps1" %%P -NoProfile -ExecutionPolicy Bypass -File "%_NURO_HOME%\bootstrap\get.nuro.ps1"',
-  '  )',
-  ')',
-  'if not exist "%_PY%" (',
-  '  echo [nuro.cmd] still missing venv; aborting. 1>&2',
-  '  exit /b 1',
-  ')',
-  'if "%~1"=="" (',
-  '  echo Nuro CLI',
-  '  echo Usage: nuro [subcommand] [options]',
-  '  echo - This prints basic usage without requiring the Python package.',
-  '  echo - Once the nuro package is installed, run: nuro --help',
-  '  exit /b 0',
-  ')',
-  '"%_PY%" -m nuro %*',
-  'exit /b %ERRORLEVEL%'
-)
-$shimCmd = ($shimCmdLines -join "`r`n")
-
-$cmdPath = Join-Path $BIN_DIR 'nuro.cmd'
-Write-FileUtf8NoBom -Path $cmdPath -Content $shimCmd
-Write-Host "[get.nuro] shim created: $cmdPath"
-
-# =====================================
-# Install/Update nuro package into venv
-# =====================================
-
-function Install-NuroPackage {
-  param(
-    [Parameter(Mandatory)] [string]$VenvPython,
-    [string]$UvExe
+function Ensure-Shim {
+  $cmdPath = Join-PathSafe $BIN_DIR 'nuro.cmd'
+  $lines = @(
+    '@echo off',
+    'setlocal',
+    'set "_PY=%USERPROFILE%\\.nuro\\venv\\Scripts\\python.exe"',
+    '"%_PY%" -m nuro %*',
+    'exit /b %ERRORLEVEL%'
   )
-  Write-Host "[get.nuro] ensuring nuro package in venv"
-  if ($UvExe -and (Test-Path $UvExe)) {
-    & $UvExe 'pip' 'install' '--python' $VenvPython '--upgrade' 'pip' 'setuptools' 'wheel'
-    if ($LASTEXITCODE -ne 0) { throw "uv pip upgrade failed with exit code $LASTEXITCODE" }
-    & $UvExe 'pip' 'install' '--python' $VenvPython '-U' 'nuro'
-    if ($LASTEXITCODE -ne 0) { throw "uv pip install nuro failed with exit code $LASTEXITCODE" }
-  } else {
-    & $VenvPython '-m' 'pip' 'install' '--upgrade' 'pip' 'setuptools' 'wheel'
-    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed with exit code $LASTEXITCODE" }
-    & $VenvPython '-m' 'pip' 'install' '-U' 'nuro'
-    if ($LASTEXITCODE -ne 0) { throw "pip install nuro failed with exit code $LASTEXITCODE" }
-  }
+  $content = ($lines -join "`r`n")
+  Write-FileUtf8NoBom -Path $cmdPath -Content $content
+  Log "shim created: $cmdPath"
 }
 
-try {
-  $venvPy = Join-Path $VENV_DIR 'Scripts/python.exe'
-  if (Test-Path $venvPy) {
-    $uvPath = $null
-    try { $uvPath = (Get-Content -Path (Join-Path $CONF_DIR 'uv.json') -Raw | ConvertFrom-Json).path } catch { }
-    Install-NuroPackage -VenvPython $venvPy -UvExe $uvPath
-    Write-Host "[get.nuro] nuro package installed/updated"
-  } else {
-    Write-Host "[get.nuro] skip nuro install: venv python not found"
-  }
-} catch {
-  Write-Host "[get.nuro] nuro install failed: $($_.Exception.Message)"
-}
-
-# =====================================
-# Add ~/.nuro/bin to PATH (user + session)
-# =====================================
-
+# ------------------------
+# PATH updates
+# ------------------------
 function Path-Contains([string]$path, [string]$dir) {
   $tgt = $dir.TrimEnd('\\')
   $matches = @((($path -split ';') | Where-Object { $_.TrimEnd('\\') -ieq $tgt }))
@@ -361,16 +294,45 @@ function Add-ToUserPath([string]$dir) {
     $new = $dir
   } elseif (-not (Path-Contains $current $dir)) {
     $new = "$dir;$current"
-  } else {
-    $new = $current
-  }
-  if ($new -ne $current) {
-    [Environment]::SetEnvironmentVariable('Path', $new, 'User')
-    return $true
-  }
+  } else { $new = $current }
+  if ($new -ne $current) { [Environment]::SetEnvironmentVariable('Path', $new, 'User'); return $true }
   return $false
 }
 
-$added = Add-ToUserPath -dir $BIN_DIR
-if (-not (Path-Contains $env:PATH $BIN_DIR)) { $env:PATH = "$BIN_DIR;" + $env:PATH }
-if ($added) { Write-Host "[get.nuro] added to User PATH: $BIN_DIR" } else { Write-Host "[get.nuro] already in User PATH: $BIN_DIR" }
+function Ensure-Path {
+  $added = Add-ToUserPath -dir $BIN_DIR
+  if (-not (Path-Contains $env:PATH $BIN_DIR)) { $env:PATH = "$BIN_DIR;" + $env:PATH }
+  if ($added) { Log "added to User PATH: $BIN_DIR" } else { Log "already in User PATH: $BIN_DIR" }
+}
+
+# ------------------------
+# Validation
+# ------------------------
+function Validate-Run {
+  $ok1 = $false; $ok2 = $false
+  try { $out1 = (& 'nuro' '--version') 2>&1; Log ("nuro --version => {0}" -f $out1); $ok1 = $true } catch { Log ("nuro --version failed: {0}" -f $_.Exception.Message) }
+  try { $out2 = (& $VENV_PY '-m' 'nuro' '--version') 2>&1; Log ("python -m nuro --version => {0}" -f $out2); $ok2 = $true } catch { Log ("python -m nuro failed: {0}" -f $_.Exception.Message) }
+  if ($ok1 -and $ok2) { Log 'SUCCESS'; return 0 } else { Log 'FAILURE'; return 1 }
+}
+
+# ------------------------
+# Main
+# ------------------------
+try {
+  Log ("channel=$Channel branch=$Branch repo=$Repo version=$Version")
+  Ensure-Venv
+  Install-Nuro
+  Ensure-Shim
+  Ensure-Path
+  $code = Validate-Run
+  # Summary
+  if ($Channel -eq 'dev') { Log ("Summary: Channel=dev Branch=$Branch Repo=$Repo") }
+  elseif ($Channel -eq 'prod') { if ($Version) { Log ("Summary: Channel=prod Version=$Version") } else { Log ("Summary: Channel=prod") } }
+  else { Log ("Summary: Channel=test") }
+  try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
+  exit $code
+} catch {
+  Log ("ERROR: {0}" -f $_.Exception.Message)
+  try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
+  exit 1
+}
