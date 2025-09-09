@@ -319,6 +319,17 @@ function Validate-Run {
 }
 
 # ------------------------
+# Graceful finish (avoid closing host window)
+# ------------------------
+function Finish([int]$code) {
+  try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
+  # By default, do not exit the host to avoid closing the window.
+  # Allow opting into process exit by setting NURO_EXIT=1
+  if ($env:NURO_EXIT -eq '1') { exit $code }
+  else { $global:LASTEXITCODE = $code }
+}
+
+# ------------------------
 # Main
 # ------------------------
 try {
@@ -332,10 +343,8 @@ try {
   if ($Channel -eq 'dev') { Log ("Summary: Channel=dev Branch=$Branch Repo=$Repo") }
   elseif ($Channel -eq 'prod') { if ($Version) { Log ("Summary: Channel=prod Version=$Version") } else { Log ("Summary: Channel=prod") } }
   else { Log ("Summary: Channel=test") }
-  try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
-  exit $code
+  Finish $code
 } catch {
   Log ("ERROR: {0}" -f $_.Exception.Message)
-  try { Stop-Transcript -ErrorAction SilentlyContinue | Out-Null } catch { }
-  exit 1
+  Finish 1
 }
