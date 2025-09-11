@@ -147,6 +147,33 @@ function Ensure-Venv {
     }
   }
   if (-not (Test-Path $VENV_PY)) { throw 'venv python not found' }
+  # Ensure pip exists in the venv (handle environments where ensurepip isn't bundled)
+  $pip_ok = $false
+  try {
+    & $VENV_PY '-m' 'pip' '--version' 2>$null
+    if ($LASTEXITCODE -eq 0) { $pip_ok = $true }
+  } catch { }
+  if (-not $pip_ok) {
+    Log 'pip missing; attempting ensurepip'
+    try {
+      & $VENV_PY '-m' 'ensurepip' '--upgrade'
+      if ($LASTEXITCODE -eq 0) { $pip_ok = $true }
+    } catch { }
+  }
+  if (-not $pip_ok) {
+    try {
+      # Fallback: use uv to provision pip into the venv
+      $uv = Ensure-Uv
+      Log 'pip missing; attempting uv pip install pip (-p)'
+      & $uv 'pip' 'install' '-p' $VENV_PY 'pip'
+      if ($LASTEXITCODE -ne 0) {
+        Log 'uv -p failed; retrying with --python'
+        & $uv 'pip' 'install' '--python' $VENV_PY 'pip'
+      }
+      if ($LASTEXITCODE -eq 0) { $pip_ok = $true }
+    } catch { }
+  }
+  if (-not $pip_ok) { throw 'pip bootstrap failed (no pip in venv)' }
   & $VENV_PY '-m' 'pip' 'install' '--upgrade' 'pip' 'setuptools' 'wheel'
   if ($LASTEXITCODE -ne 0) { throw "pip bootstrap failed ($LASTEXITCODE)" }
   Log "venv ready: $VENV_PY"
