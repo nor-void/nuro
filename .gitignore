@@ -2,3 +2,5 @@
 /private-scripts
 AGENT.md
 .venv/
+logs/
+nuro/dist/
