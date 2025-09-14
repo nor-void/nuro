@@ -4,3 +4,6 @@ AGENT.md
 .venv/
 logs/
 nuro/dist/
+codex.*
+temporary.md
+__pycache__/
