@@ -7,3 +7,4 @@ nuro/dist/
 codex.*
 temporary.md
 __pycache__/
+/cmds_deprecated

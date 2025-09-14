@@ -7,11 +7,29 @@ from typing import List, Optional, Tuple
 from .runner import run_command, ensure_nuro_tree
 from .usage import print_root_usage
 from . import __version__
+from .debuglog import set_debug_enabled, is_debug_enabled
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+
+    # Parse global flags: --debug / --no-debug
+    dbg = None
+    filtered: List[str] = []
+    it = iter(argv)
+    for a in it:
+        if a in ("--debug", "-d"):
+            dbg = True
+            continue
+        if a in ("--no-debug",):
+            dbg = False
+            continue
+        filtered.append(a)
+    argv = filtered
+
+    if dbg is not None:
+        set_debug_enabled(dbg)
 
     # Ensure ~/.nuro tree exists
     ensure_nuro_tree()

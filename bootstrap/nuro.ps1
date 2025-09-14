@@ -2,21 +2,28 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Always dispatch to Python module under ~/.nuro/venv when available
-try {
-  $NURO_HOME = Join-Path ($env:USERPROFILE ?? $HOME) '.nuro'
-  $VENV_PY   = Join-Path $NURO_HOME 'venv/Scripts/python.exe'
-  if (Test-Path $VENV_PY) {
-    & $VENV_PY '-m' 'nuro' @args
-    exit $LASTEXITCODE
-  } else {
-    Write-Host "[nuro] venv python not found: $VENV_PY"
-    Write-Host "[nuro] run 'pwsh bootstrap/get.nuro.ps1' to initialize."
+# Use current PowerShell session by default.
+# To force Python dispatch instead, set: $env:NURO_USE_CURRENT_POWERSHELL = '0'
+$__useCurrentShell = $true
+if ($env:NURO_USE_CURRENT_POWERSHELL -in @('0','false','False','no','NO')) { $__useCurrentShell = $false }
+
+if (-not $__useCurrentShell) {
+  # Dispatch to Python module under ~/.nuro/venv when available
+  try {
+    $NURO_HOME = Join-Path ($env:USERPROFILE ?? $HOME) '.nuro'
+    $VENV_PY   = Join-Path $NURO_HOME 'venv/Scripts/python.exe'
+    if (Test-Path $VENV_PY) {
+      & $VENV_PY '-m' 'nuro' @args
+      exit $LASTEXITCODE
+    } else {
+      Write-Host "[nuro] venv python not found: $VENV_PY"
+      Write-Host "[nuro] run 'pwsh bootstrap/get.nuro.ps1' to initialize."
+      exit 1
+    }
+  } catch {
+    Write-Host "[nuro] dispatch failed: $($_.Exception.Message)"
     exit 1
   }
-} catch {
-  Write-Host "[nuro] dispatch failed: $($_.Exception.Message)"
-  exit 1
 }
 
 $Ver = "0.0.22"

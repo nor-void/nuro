@@ -7,7 +7,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from .paths import ensure_tree, ps1_dir
 from .registry import load_registry
 from .buckets import resolve_cmd_source, fetch_to
-from .pshost import run_ps_file, run_usage_for_ps1
+from .pshost import run_ps_file, run_usage_for_ps1, run_cmd_for_ps1
 
 
 def ensure_nuro_tree() -> None:
@@ -108,14 +108,14 @@ def run_command(name: str, args: List[str]) -> int:
         if p.exists():
             if help_requested:
                 return run_usage_for_ps1(p, cmd)
-            return run_ps_file(p, args)
+            return run_cmd_for_ps1(p, cmd, args)
 
     # Attempt on-demand fetch (policy A: only when missing)
     fetched = _try_fetch(cmd, reg, bucket_hint)
     if fetched:
         if help_requested:
             return run_usage_for_ps1(fetched, cmd)
-        return run_ps_file(fetched, args)
+        return run_cmd_for_ps1(fetched, cmd, args)
 
     # Fallback to Python implementation (if any)
     try:
@@ -126,4 +126,3 @@ def run_command(name: str, args: List[str]) -> int:
         raise ImportError
     except Exception:
         raise RuntimeError(f"command '{cmd}' not found in any bucket or python implementation")
-

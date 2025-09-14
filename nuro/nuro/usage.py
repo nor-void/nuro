@@ -59,6 +59,9 @@ def print_root_usage() -> None:
     print("USAGE:")
     print("  nuro <command> [args...]")
     print("  nuro <command> -h|--help|/?\n")
+    print("GLOBAL OPTIONS:")
+    print("  --debug | -d       Enable debug logging")
+    print("  --no-debug         Disable debug logging\n")
     # Try online list, fallback to local/offline
     lines: List[str] = []
     try:
