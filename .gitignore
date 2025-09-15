@@ -1,0 +1,11 @@
+/.secrets
+/private-scripts
+AGENT.md
+.venv/
+logs/
+nuro/dist/
+codex.*
+temporary.md
+__pycache__/
+/cmds_deprecated
+.nor*

@@ -2,6 +2,30 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Use current PowerShell session by default.
+# To force Python dispatch instead, set: $env:NURO_USE_CURRENT_POWERSHELL = '0'
+$__useCurrentShell = $true
+if ($env:NURO_USE_CURRENT_POWERSHELL -in @('0','false','False','no','NO')) { $__useCurrentShell = $false }
+
+if (-not $__useCurrentShell) {
+  # Dispatch to Python module under ~/.nuro/venv when available
+  try {
+    $NURO_HOME = Join-Path ($env:USERPROFILE ?? $HOME) '.nuro'
+    $VENV_PY   = Join-Path $NURO_HOME 'venv/Scripts/python.exe'
+    if (Test-Path $VENV_PY) {
+      & $VENV_PY '-m' 'nuro' @args
+      exit $LASTEXITCODE
+    } else {
+      Write-Host "[nuro] venv python not found: $VENV_PY"
+      Write-Host "[nuro] run 'pwsh bootstrap/get.nuro.ps1' to initialize."
+      exit 1
+    }
+  } catch {
+    Write-Host "[nuro] dispatch failed: $($_.Exception.Message)"
+    exit 1
+  }
+}
+
 $Ver = "0.0.22"
 
 if ($env:NURO_DEBUG -eq '1') {
@@ -9,19 +33,46 @@ if ($env:NURO_DEBUG -eq '1') {
 }
 
 #================================================================================
-# ref / base
+# Unified config for bucket base (~/.nuro/config/config.json)
 #================================================================================
-$Ref  = $env:NURO_REF
-function Normalize-Ref([string]$r) {
-  if (-not $r) { return 'main' }
-  if ($r -like 'refs/heads/*') { return $r.Substring(11) }
-  if ($r -like 'refs/tags/*')  { return $r.Substring(10) }
-  return $r
+$NURO_HOME   = Join-Path ($env:USERPROFILE ?? $HOME) ".nuro"
+$NURO_CONFIG = Join-Path $NURO_HOME "config"
+$APP_CONFIG  = Join-Path $NURO_CONFIG "config.json"
+
+function Ensure-NuroDirs {
+  if (-not (Test-Path $NURO_HOME))   { New-Item -ItemType Directory -Path $NURO_HOME   | Out-Null }
+  if (-not (Test-Path $NURO_CONFIG)) { New-Item -ItemType Directory -Path $NURO_CONFIG | Out-Null }
 }
-$NormRef = Normalize-Ref $Ref
-$Base = "https://raw.githubusercontent.com/mr-certain-a/nuro/$NormRef"
-$Owner = "mr-certain-a"
-$Repo  = "nuro"
+
+function Get-DefaultAppConfig {
+  # Default official bucket base (commands under "cmds/")
+  [pscustomobject]@{ official_bucket_base = 'https://raw.githubusercontent.com/nor-void/nuro' }
+}
+
+function Load-NuroAppConfig {
+  Ensure-NuroDirs
+  if (-not (Test-Path $APP_CONFIG)) {
+    $def = Get-DefaultAppConfig
+    ($def | ConvertTo-Json -Depth 4) | Set-Content -Encoding UTF8 $APP_CONFIG
+    return $def
+  }
+  try {
+    $raw = Get-Content $APP_CONFIG -Raw -Encoding UTF8
+    $data = if ([string]::IsNullOrWhiteSpace($raw)) { [pscustomobject]@{} } else { $raw | ConvertFrom-Json }
+    if ($null -eq $data -or $data.GetType().Name -notin @('Hashtable','PSCustomObject')) { throw 'broken' }
+    if (-not $data.official_bucket_base) {
+      $data | Add-Member -NotePropertyName official_bucket_base -NotePropertyValue (Get-DefaultAppConfig).official_bucket_base -Force
+    }
+    return $data
+  } catch {
+    $def = Get-DefaultAppConfig
+    ($def | ConvertTo-Json -Depth 4) | Set-Content -Encoding UTF8 $APP_CONFIG
+    return $def
+  }
+}
+
+$AppCfg = Load-NuroAppConfig
+$Base   = ($AppCfg.official_bucket_base.TrimEnd('/'))
 
 #================================================================================
 # === Bucket registry (local JSON) ===
@@ -31,12 +82,11 @@ $NURO_CONFIG = Join-Path $NURO_HOME "config"
 $BUCKET_FILE = Join-Path $NURO_CONFIG "buckets.json"
 
 function Get-NuroDefaultRegistry {
-  $norm = Normalize-Ref $env:NURO_REF
   [pscustomobject]@{
     buckets = @(
       [pscustomobject]@{
         name     = 'official'
-        uri      = "github::mr-certain-a/nuro@$norm"
+        uri      = ("raw::{0}" -f $Base)
         priority = 100
         trusted  = $true
       }
@@ -161,18 +211,59 @@ function Parse-BucketUri([string]$uri) {
 function Resolve-CmdSource([string]$bucketUri,[string]$cmdName) {
   $p = Parse-BucketUri $bucketUri
   switch ($p.type) {
-    'github' { return @{ kind='remote'; url=("{0}/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) } }
-    'raw'    { return @{ kind='remote'; url=("{0}/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) } }
+    'github' { return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) } }
+    'raw'    { return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) } }
     'local'  {
-      $path = Join-Path $p.base "$cmdName.ps1"
+      $path = Join-Path (Join-Path $p.base 'cmds') "$cmdName.ps1"
+      return @{ kind='local'; path=$path }
+    }
+  }
+}
+
+# Commit-aware resolver (uses optional bucket.'sha1-hash' when available)
+function Resolve-CmdSourceWithMeta([object]$bucket,[string]$cmdName) {
+  $uri = [string]$bucket.uri
+  $sha = ''
+  try { $sha = [string]::Copy([string]($bucket.'sha1-hash')) } catch { $sha = '' }
+  if ($null -eq $sha) { $sha = '' }
+  $sha = $sha.Trim()
+
+  $p = Parse-BucketUri $uri
+  switch ($p.type) {
+    'github' {
+      # p.base = https://raw.githubusercontent.com/owner/repo/ref
+      # if sha present, replace ref with sha
+      $m = [Regex]::Match($p.base, '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)$')
+      if ($m.Success) {
+        $owner = $m.Groups[1].Value; $repo = $m.Groups[2].Value; $ref = $m.Groups[3].Value
+        if ($sha) { $ref = $sha }
+        $base = "https://raw.githubusercontent.com/$owner/$repo/$ref"
+        return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $base, $cmdName, [Guid]::NewGuid()) }
+      }
+      return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) }
+    }
+    'raw' {
+      # If this is a GitHub raw base like https://raw.githubusercontent.com/owner/repo[/ref]
+      $m = [Regex]::Match($p.base, '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)(?:/([^/]+))?$')
+      if ($m.Success) {
+        $owner = $m.Groups[1].Value; $repo = $m.Groups[2].Value; $ref = $m.Groups[3].Value
+        if (-not $ref) { $ref = 'main' }
+        if ($sha) { $ref = $sha }
+        $base = "https://raw.githubusercontent.com/$owner/$repo/$ref"
+        return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $base, $cmdName, [Guid]::NewGuid()) }
+      }
+      return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) }
+    }
+    'local' {
+      $path = Join-Path (Join-Path $p.base 'cmds') "$cmdName.ps1"
       return @{ kind='local'; path=$path }
     }
   }
 }
 
 # 実行（取って dot-source → NuroCmd_* 呼び出し）; Args は後述の Convert-ArgsToHash を使用
-function Run-FromBucket([string]$bucketUri,[string]$cmd,[string[]]$tokens) {
-  $src = Resolve-CmdSource $bucketUri $cmd
+function Run-FromBucket([object]$bucket,[string]$cmd,[string[]]$tokens) {
+  $src = Resolve-CmdSourceWithMeta $bucket $cmd
   $H = @{ 'Cache-Control'='no-cache'; 'Pragma'='no-cache'; 'User-Agent'='nuro' }
 
   $code = $null
@@ -215,10 +306,8 @@ function Run-FromBucket([string]$bucketUri,[string]$cmd,[string[]]$tokens) {
 function Convert-ArgsToHash {
   param(
     [string]  $TargetFn,   # 例: 'NuroCmd_get'
-    [string[]]$Tokens = @()
+    [string[]]$Tokens
   )
-  if ($null -eq $Args) { $Args = @() }
-
   $meta = (Get-Command $TargetFn).Parameters   # IDictionary<string, ParameterMetadata>
 
   # 名前/エイリアスの正規化マップ（大文字小文字無視）
@@ -318,7 +407,7 @@ function Debug-ShowPins {
 function Invoke-RemoteCmd {
   param(
     [Parameter(Mandatory=$true)][string]$Name,
-    [string[]]$Args = @()
+    [string[]]$Args
   )
 
   if ($null -eq $Args) { $Args = @() } else { $Args = @($Args) }
@@ -349,7 +438,7 @@ function Invoke-RemoteCmd {
   if ($bucketHint) {
     $b = $reg.buckets | Where-Object { $_.name -eq $bucketHint }
     if (-not $b) { throw "bucket '$bucketHint' not found" }
-    return (Run-FromBucket -bucketUri $b.uri -cmd $cmd -tokens $Args)
+    return (Run-FromBucket -bucket $b -cmd $cmd -tokens $Args)
   }
 
   # 候補列: priority desc
@@ -357,7 +446,7 @@ function Invoke-RemoteCmd {
   $errors = @()
   foreach ($b in $cands) {
     try {
-      return (Run-FromBucket -bucketUri $b.uri -cmd $cmd -tokens $Args)
+      return (Run-FromBucket -bucket $b -cmd $cmd -tokens $Args)
     } catch {
       $errors += "  - $($b.name): $($_.Exception.Message.Split("`n")[0])"
     }
@@ -372,14 +461,47 @@ function Invoke-RemoteCmd {
 }
 
 function Get-AllCommandsUsage {
-  $apiUrl = "https://api.github.com/repos/$Owner/$Repo/contents/cmds"
+  # Parse owner/repo[/ref] from $Base to use GitHub contents API
+  $owner = $null; $repo = $null; $ref = 'main'
+  if ($Base -match '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)(?:/([^/]+))?') {
+    $owner = $Matches[1]; $repo = $Matches[2]
+    if ($Matches.Count -ge 4 -and $Matches[3]) { $ref = $Matches[3] }
+  }
+  if (-not $owner -or -not $repo) { return @() }
+  # Override ref with commit if registry has official.sha1-hash
+  try {
+    $regx = Load-NuroRegistry
+    foreach ($bx in $regx.buckets) {
+      if ($bx.name -eq 'official') {
+        $shax = ''
+        try { $shax = [string]::Copy([string]($bx.'sha1-hash')) } catch { $shax = '' }
+        if ($shax) { $ref = $shax }
+        break
+      }
+    }
+  } catch { }
+  $apiUrl = "https://api.github.com/repos/$owner/$repo/contents/cmds?ref=$ref"
   try { $files = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing } catch { return @() }
   $lines = @()
 
   foreach ($f in $files) {
     if ($f.name -like '*.ps1') {
       $name = [IO.Path]::GetFileNameWithoutExtension($f.name)
-      $url  = "$Base/cmds/$($f.name)"
+      # Build raw URL with commit-aware ref if available
+      $ref2 = $ref
+      try {
+        $reg2 = Load-NuroRegistry
+        foreach ($b in $reg2.buckets) {
+          if ($b.name -eq 'official') {
+            $sha2 = ''
+            try { $sha2 = [string]::Copy([string]($b.'sha1-hash')) } catch { $sha2 = '' }
+            if ($sha2) { $ref2 = $sha2 }
+            break
+          }
+        }
+      } catch { }
+      $rawBase = "https://raw.githubusercontent.com/$owner/$repo/$ref2"
+      $url  = "$rawBase/cmds/$($f.name)"
       try {
         $code = Invoke-RestMethod -Uri $url -UseBasicParsing
         $sb   = [scriptblock]::Create($code)
