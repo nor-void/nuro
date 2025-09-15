@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import subprocess
+import ast
+import re
+from importlib import metadata as _im
+from .debuglog import debug
 from .paths import ensure_tree, ps1_dir, py_dir, sh_dir, cmds_cache_base
 from .registry import load_registry
 from .buckets import resolve_cmd_source_with_meta, fetch_to
@@ -130,9 +134,19 @@ def run_command(name: str, args: List[str]) -> int:
                 if ext == "ps1":
                     return run_cmd_for_ps1(p, cmd, args)
                 if ext == "py":
+                    _ensure_script_requirements(p)
                     code = (
-                        "import runpy,sys; ns=runpy.run_path(%r); "
-                        "f=ns.get('main'); sys.exit(int(f(sys.argv[1:]) or 0) if callable(f) else 0)"
+                        "import runpy,sys,inspect; ns=runpy.run_path(%r); "
+                        "f=ns.get('main'); "
+                        "\nif callable(f):\n"
+                        "    try:\n"
+                        "        sig=inspect.signature(f)\n"
+                        "        rc=f(sys.argv[1:]) if len(sig.parameters)>=1 else f()\n"
+                        "    except TypeError:\n"
+                        "        rc=f()\n"
+                        "    sys.exit(int(rc or 0))\n"
+                        "else:\n"
+                        "    sys.exit(0)\n"
                     ) % (str(p),)
                     return subprocess.call(["python3", "-c", code, *args])
                 return subprocess.call(["bash", str(p), *args])
@@ -149,11 +163,103 @@ def run_command(name: str, args: List[str]) -> int:
         if ext == "ps1":
             return run_cmd_for_ps1(path, cmd, args)
         if ext == "py":
+            _ensure_script_requirements(path)
             code = (
-                "import runpy,sys; ns=runpy.run_path(%r); "
-                "f=ns.get('main'); sys.exit(int(f(sys.argv[1:]) or 0) if callable(f) else 0)"
+                "import runpy,sys,inspect; ns=runpy.run_path(%r); "
+                "f=ns.get('main'); "
+                "\nif callable(f):\n"
+                "    try:\n"
+                "        sig=inspect.signature(f)\n"
+                "        rc=f(sys.argv[1:]) if len(sig.parameters)>=1 else f()\n"
+                "    except TypeError:\n"
+                "        rc=f()\n"
+                "    sys.exit(int(rc or 0))\n"
+                "else:\n"
+                "    sys.exit(0)\n"
             ) % (str(path),)
             return subprocess.call(["python3", "-c", code, *args])
         return subprocess.call(["bash", str(path), *args])
 
     raise RuntimeError(f"command '{cmd}' not found in any bucket")
+
+
+# ---------------- dependency handling for python scripts -----------------
+
+_REQ_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+")
+
+
+def _extract_requirements_from_file(path: Path) -> List[str]:
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+        node = ast.parse(src, filename=str(path))
+        for stmt in node.body:
+            if isinstance(stmt, ast.Assign):
+                for t in stmt.targets:
+                    if isinstance(t, ast.Name) and t.id == "__requires__":
+                        if isinstance(stmt.value, (ast.List, ast.Tuple)):
+                            reqs: List[str] = []
+                            for e in stmt.value.elts:
+                                if isinstance(e, ast.Constant) and isinstance(e.value, str):
+                                    reqs.append(e.value.strip())
+                            return reqs
+        return []
+    except Exception:
+        return []
+
+
+def _pkg_name_from_spec(spec: str) -> str:
+    # take leading token up to bracket or comparator
+    s = spec.strip()
+    s = s.split("[", 1)[0]
+    m = _REQ_NAME_RE.match(s)
+    return m.group(0) if m else s
+
+
+def _is_req_satisfied(spec: str) -> bool:
+    name = _pkg_name_from_spec(spec)
+    try:
+        ver = _im.version(name)
+    except Exception:
+        return False
+    # if exact pin specified, verify equality; for other operators, force install
+    if "==" in spec:
+        want = spec.split("==", 1)[1].strip()
+        return ver == want
+    # no version constraint -> any installed version is fine
+    ops = [">=", "<=", ">", "<", "!=", "~=", "==="]
+    if any(op in spec for op in ops):
+        return False
+    return True
+
+
+def _ensure_script_requirements(path: Path) -> None:
+    reqs = _extract_requirements_from_file(path)
+    if not reqs:
+        return
+    debug(f"Checking script requirements for {path}")
+    for spec in reqs:
+        if _is_req_satisfied(spec):
+            debug(f"Requirement already satisfied: {spec}")
+            continue
+        debug(f"Installing requirement: {spec}")
+        try:
+            # try python -m pip / pip3 / pip in order
+            def _try(cmd: list[str]) -> int:
+                return subprocess.call(cmd)
+
+            cmds = [
+                ["python3", "-m", "pip", "install", spec],
+                ["pip3", "install", spec],
+                ["pip", "install", spec],
+            ]
+            rc = 1
+            for c in cmds:
+                rc = _try(c)
+                if rc == 0:
+                    break
+            if rc == 0:
+                debug(f"Installed requirement: {spec}")
+            else:
+                debug(f"Failed to install requirement (rc={rc}): {spec}")
+        except Exception as e:
+            debug(f"Exception during pip install for {spec}: {e}")
