@@ -8,8 +8,9 @@ import subprocess
 import ast
 import re
 from importlib import metadata as _im
+import json
 from .debuglog import debug
-from .paths import ensure_tree, ps1_dir, py_dir, sh_dir, cmds_cache_base
+from .paths import ensure_tree, ps1_dir, py_dir, sh_dir, cmds_cache_base, cache_dir
 from .registry import load_registry
 from .buckets import resolve_cmd_source_with_meta, fetch_to
 from .pshost import run_ps_file, run_usage_for_ps1, run_cmd_for_ps1
@@ -237,15 +238,23 @@ def _ensure_script_requirements(path: Path) -> None:
     if not reqs:
         return
     debug(f"Checking script requirements for {path}")
+    cache = _load_reqs_cache()
+    changed = False
     for spec in reqs:
+        if cache.get(spec) is True:
+            debug(f"Requirement cached as satisfied: {spec}")
+            continue
         if _is_req_satisfied(spec):
             debug(f"Requirement already satisfied: {spec}")
+            cache[spec] = True
+            changed = True
             continue
         debug(f"Installing requirement: {spec}")
         try:
             # try python -m pip / pip3 / pip in order
             def _try(cmd: list[str]) -> int:
-                return subprocess.call(cmd)
+                # Suppress pip's stdout/stderr; rely on debug() for reporting
+                return subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
             cmds = [
                 ["python3", "-m", "pip", "install", spec],
@@ -258,8 +267,47 @@ def _ensure_script_requirements(path: Path) -> None:
                 if rc == 0:
                     break
             if rc == 0:
+                cache[spec] = True
+                changed = True
                 debug(f"Installed requirement: {spec}")
+                _print_green(f"Installed dependency: {spec}")
             else:
+                cache[spec] = False
+                changed = True
                 debug(f"Failed to install requirement (rc={rc}): {spec}")
         except Exception as e:
+            cache[spec] = False
+            changed = True
             debug(f"Exception during pip install for {spec}: {e}")
+    if changed:
+        _save_reqs_cache(cache)
+
+def _reqs_cache_path() -> Path:
+    return cache_dir() / "py-reqs.json"
+
+def _load_reqs_cache() -> Dict[str, bool]:
+    try:
+        p = _reqs_cache_path()
+        if not p.exists():
+            return {}
+        raw = p.read_text(encoding="utf-8")
+        data = json.loads(raw) if raw.strip() else {}
+        if isinstance(data, dict):
+            return {str(k): bool(v) for k, v in data.items()}
+        return {}
+    except Exception:
+        return {}
+
+def _save_reqs_cache(d: Dict[str, bool]) -> None:
+    try:
+        p = _reqs_cache_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+def _print_green(msg: str) -> None:
+    try:
+        print("\x1b[32m" + msg + "\x1b[0m")
+    except Exception:
+        print(msg)
