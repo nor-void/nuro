@@ -95,6 +95,9 @@ def print_root_usage() -> None:
         lines = _list_local_commands()
     if lines:
         print("COMMANDS (known):")
+        print("")
+        print("| コマンド | 種別 | 使用例 |")
+        print("|---|---|---|")
         # Try to enrich with one-line help by invoking NuroUsage_*
         cfg = load_app_config()
         base = official_bucket_base(cfg)
@@ -129,13 +132,12 @@ def print_root_usage() -> None:
                     if out:
                         help_line = out.splitlines()[0].strip()
                 except Exception:
-                    pass
-                if help_line:
-                    print(f"  {n}：{bucket_name}：{help_line}")
-                else:
-                    print(f"  {n}：{bucket_name}")
+                    help_line = ""
+                # Escape pipes for Markdown table
+                help_line = help_line.replace('|', '\\|') if help_line else ""
+                print(f"| {n} | {bucket_name} | {help_line} |")
         else:
             for n in lines:
-                print(f"  {n}：official")
+                print(f"| {n} | local |  |")
     else:
         print("(no commands listed / offline)")
