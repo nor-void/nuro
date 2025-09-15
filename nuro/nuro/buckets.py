@@ -58,7 +58,7 @@ def resolve_cmd_source(bucket_uri: str, cmd: str) -> Dict[str, str]:
         return {"kind": "local", "path": path}
 
 
-def resolve_cmd_source_with_meta(bucket: Dict[str, object], cmd: str) -> Dict[str, str]:
+def resolve_cmd_source_with_meta(bucket: Dict[str, object], cmd: str, ext: str = "ps1") -> Dict[str, str]:
     """Resolve command source considering optional metadata such as 'sha1-hash'.
 
     - If bucket['uri'] is github::owner/repo@ref and 'sha1-hash' is present,
@@ -71,14 +71,14 @@ def resolve_cmd_source_with_meta(bucket: Dict[str, object], cmd: str) -> Dict[st
         sha = str(bucket.get("sha1-hash") or "").strip()
         ref_or_sha = sha if sha else (p.ref or "main")
         base = f"https://raw.githubusercontent.com/{p.owner}/{p.repo}/{ref_or_sha}".rstrip("/")
-        url = f"{base}/cmds/{cmd}.ps1?cb={uuid4()}"
+        url = f"{base}/cmds/{cmd}.{ext}?cb={uuid4()}"
         return {"kind": "remote", "url": url}
     if p.type == "raw":
         base = p.base.rstrip("/")
-        url = f"{base}/cmds/{cmd}.ps1?cb={uuid4()}"
+        url = f"{base}/cmds/{cmd}.{ext}?cb={uuid4()}"
         return {"kind": "remote", "url": url}
     # local
-    path = str((Path(p.base) / "cmds" / f"{cmd}.ps1").resolve())
+    path = str((Path(p.base) / "cmds" / f"{cmd}.{ext}").resolve())
     return {"kind": "local", "path": path}
 
 

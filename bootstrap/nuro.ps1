@@ -220,9 +220,50 @@ function Resolve-CmdSource([string]$bucketUri,[string]$cmdName) {
   }
 }
 
+# Commit-aware resolver (uses optional bucket.'sha1-hash' when available)
+function Resolve-CmdSourceWithMeta([object]$bucket,[string]$cmdName) {
+  $uri = [string]$bucket.uri
+  $sha = ''
+  try { $sha = [string]::Copy([string]($bucket.'sha1-hash')) } catch { $sha = '' }
+  if ($null -eq $sha) { $sha = '' }
+  $sha = $sha.Trim()
+
+  $p = Parse-BucketUri $uri
+  switch ($p.type) {
+    'github' {
+      # p.base = https://raw.githubusercontent.com/owner/repo/ref
+      # if sha present, replace ref with sha
+      $m = [Regex]::Match($p.base, '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)$')
+      if ($m.Success) {
+        $owner = $m.Groups[1].Value; $repo = $m.Groups[2].Value; $ref = $m.Groups[3].Value
+        if ($sha) { $ref = $sha }
+        $base = "https://raw.githubusercontent.com/$owner/$repo/$ref"
+        return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $base, $cmdName, [Guid]::NewGuid()) }
+      }
+      return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) }
+    }
+    'raw' {
+      # If this is a GitHub raw base like https://raw.githubusercontent.com/owner/repo[/ref]
+      $m = [Regex]::Match($p.base, '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)(?:/([^/]+))?$')
+      if ($m.Success) {
+        $owner = $m.Groups[1].Value; $repo = $m.Groups[2].Value; $ref = $m.Groups[3].Value
+        if (-not $ref) { $ref = 'main' }
+        if ($sha) { $ref = $sha }
+        $base = "https://raw.githubusercontent.com/$owner/$repo/$ref"
+        return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $base, $cmdName, [Guid]::NewGuid()) }
+      }
+      return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) }
+    }
+    'local' {
+      $path = Join-Path (Join-Path $p.base 'cmds') "$cmdName.ps1"
+      return @{ kind='local'; path=$path }
+    }
+  }
+}
+
 # 実行（取って dot-source → NuroCmd_* 呼び出し）; Args は後述の Convert-ArgsToHash を使用
-function Run-FromBucket([string]$bucketUri,[string]$cmd,[string[]]$tokens) {
-  $src = Resolve-CmdSource $bucketUri $cmd
+function Run-FromBucket([object]$bucket,[string]$cmd,[string[]]$tokens) {
+  $src = Resolve-CmdSourceWithMeta $bucket $cmd
   $H = @{ 'Cache-Control'='no-cache'; 'Pragma'='no-cache'; 'User-Agent'='nuro' }
 
   $code = $null
@@ -397,7 +438,7 @@ function Invoke-RemoteCmd {
   if ($bucketHint) {
     $b = $reg.buckets | Where-Object { $_.name -eq $bucketHint }
     if (-not $b) { throw "bucket '$bucketHint' not found" }
-    return (Run-FromBucket -bucketUri $b.uri -cmd $cmd -tokens $Args)
+    return (Run-FromBucket -bucket $b -cmd $cmd -tokens $Args)
   }
 
   # 候補列: priority desc
@@ -405,7 +446,7 @@ function Invoke-RemoteCmd {
   $errors = @()
   foreach ($b in $cands) {
     try {
-      return (Run-FromBucket -bucketUri $b.uri -cmd $cmd -tokens $Args)
+      return (Run-FromBucket -bucket $b -cmd $cmd -tokens $Args)
     } catch {
       $errors += "  - $($b.name): $($_.Exception.Message.Split("`n")[0])"
     }
@@ -427,6 +468,18 @@ function Get-AllCommandsUsage {
     if ($Matches.Count -ge 4 -and $Matches[3]) { $ref = $Matches[3] }
   }
   if (-not $owner -or -not $repo) { return @() }
+  # Override ref with commit if registry has official.sha1-hash
+  try {
+    $regx = Load-NuroRegistry
+    foreach ($bx in $regx.buckets) {
+      if ($bx.name -eq 'official') {
+        $shax = ''
+        try { $shax = [string]::Copy([string]($bx.'sha1-hash')) } catch { $shax = '' }
+        if ($shax) { $ref = $shax }
+        break
+      }
+    }
+  } catch { }
   $apiUrl = "https://api.github.com/repos/$owner/$repo/contents/cmds?ref=$ref"
   try { $files = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing } catch { return @() }
   $lines = @()
@@ -434,7 +487,21 @@ function Get-AllCommandsUsage {
   foreach ($f in $files) {
     if ($f.name -like '*.ps1') {
       $name = [IO.Path]::GetFileNameWithoutExtension($f.name)
-      $url  = "$Base/cmds/$($f.name)"
+      # Build raw URL with commit-aware ref if available
+      $ref2 = $ref
+      try {
+        $reg2 = Load-NuroRegistry
+        foreach ($b in $reg2.buckets) {
+          if ($b.name -eq 'official') {
+            $sha2 = ''
+            try { $sha2 = [string]::Copy([string]($b.'sha1-hash')) } catch { $sha2 = '' }
+            if ($sha2) { $ref2 = $sha2 }
+            break
+          }
+        }
+      } catch { }
+      $rawBase = "https://raw.githubusercontent.com/$owner/$repo/$ref2"
+      $url  = "$rawBase/cmds/$($f.name)"
       try {
         $code = Invoke-RestMethod -Uri $url -UseBasicParsing
         $sb   = [scriptblock]::Create($code)

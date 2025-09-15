@@ -4,7 +4,8 @@ import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from .paths import ensure_tree, ps1_dir
+import subprocess
+from .paths import ensure_tree, ps1_dir, py_dir, sh_dir, cmds_cache_base
 from .registry import load_registry
 from .buckets import resolve_cmd_source_with_meta, fetch_to
 from .pshost import run_ps_file, run_usage_for_ps1, run_cmd_for_ps1
@@ -22,22 +23,27 @@ def _split_bucket_hint(name: str) -> Tuple[Optional[str], str]:
     return None, name
 
 
-def _local_ps1_paths(cmd: str, bucket_hint: Optional[str], reg: Dict) -> List[Path]:
+def _local_paths_for_ext(cmd: str, bucket_hint: Optional[str], reg: Dict, ext: str) -> List[Path]:
     paths: List[Path] = []
-    base = ps1_dir()
-    # flat legacy path
-    paths.append(base / f"{cmd}.ps1")
+    if ext == "ps1":
+        base = ps1_dir()
+    elif ext == "py":
+        base = py_dir()
+    else:
+        base = sh_dir()
+    # flat legacy path (not used for new cache structure but keep for completeness)
+    paths.append(base / f"{cmd}.{ext}")
     # pinned bucket preferred
     pins = reg.get("pins", {}) or {}
     pinned = pins.get(cmd)
     if bucket_hint:
-        paths.append(base / bucket_hint / f"{cmd}.ps1")
+        paths.append(base / bucket_hint / f"{cmd}.{ext}")
     if pinned:
-        paths.append(base / pinned / f"{cmd}.ps1")
+        paths.append(base / pinned / f"{cmd}.{ext}")
     # all buckets by priority
     buckets = sorted(reg.get("buckets", []), key=lambda x: int(x.get("priority", 0)), reverse=True)
     for b in buckets:
-        paths.append(base / b.get("name", "") / f"{cmd}.ps1")
+        paths.append(base / b.get("name", "") / f"{cmd}.{ext}")
     # dedup while preserving order
     seen = set()
     uniq: List[Path] = []
@@ -50,8 +56,7 @@ def _local_ps1_paths(cmd: str, bucket_hint: Optional[str], reg: Dict) -> List[Pa
     return uniq
 
 
-def _try_fetch(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[Path]:
-    base = ps1_dir()
+def _bucket_resolution_order(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> List[Dict]:
     # determine fetch order: bucket_hint -> pin -> priority
     order: List[Dict] = []  # bucket dicts in resolution order
     buckets_by_name = {b["name"]: b for b in reg.get("buckets", [])}
@@ -69,31 +74,39 @@ def _try_fetch(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[Path
             # already included
             pass
         order.append(b)
+    return order
 
-    # Try fetching from each until success; do not overwrite existing (policy A)
-    for b in order:
-        name = str(b.get("name", ""))
-        dest = base / name / f"{cmd}.ps1"
-        if dest.exists():
-            return dest
-        src = resolve_cmd_source_with_meta(b, cmd)
-        if src.get("kind") == "local":
-            local_path = Path(src["path"])  # may be absolute
-            if local_path.exists():
-                dest.parent.mkdir(parents=True, exist_ok=True)
+def _try_fetch_any(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[Tuple[Path, str]]:
+    exts = ["ps1", "py", "sh"]
+    for b in _bucket_resolution_order(cmd, reg, bucket_hint):
+        bname = str(b.get("name", ""))
+        for ext in exts:
+            if ext == "ps1":
+                dest = ps1_dir() / bname / f"{cmd}.ps1"
+            elif ext == "py":
+                dest = py_dir() / bname / f"{cmd}.py"
+            else:
+                dest = sh_dir() / bname / f"{cmd}.sh"
+            if dest.exists():
+                return dest, ext
+            src = resolve_cmd_source_with_meta(b, cmd, ext=ext)
+            if src.get("kind") == "local":
+                local_path = Path(src["path"])  # may be absolute
+                if local_path.exists():
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        data = local_path.read_bytes()
+                        dest.write_bytes(data)
+                        return dest, ext
+                    except Exception:
+                        continue
+            else:
                 try:
-                    # copy
-                    data = local_path.read_bytes()
-                    dest.write_bytes(data)
-                    return dest
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    fetch_to(dest, src["url"])
+                    return dest, ext
                 except Exception:
                     continue
-        else:
-            try:
-                fetch_to(dest, src["url"])
-                return dest
-            except Exception:
-                continue
     return None
 
 
@@ -104,26 +117,43 @@ def run_command(name: str, args: List[str]) -> int:
     # help path: nuro <cmd> -h / --help
     help_requested = any(a in ("-h", "--help", "/?") for a in args)
 
-    # Search local files
-    for p in _local_ps1_paths(cmd, bucket_hint, reg):
-        if p.exists():
-            if help_requested:
-                return run_usage_for_ps1(p, cmd)
-            return run_cmd_for_ps1(p, cmd, args)
+    # Search local caches in order: ext priority ps1 -> py -> sh
+    for ext in ("ps1", "py", "sh"):
+        paths = _local_paths_for_ext(cmd, bucket_hint, reg, ext)
+        for p in paths:
+            if p.exists():
+                if help_requested:
+                    if ext == "ps1":
+                        return run_usage_for_ps1(p, cmd)
+                    print(f"nuro {cmd} - no usage available")
+                    return 0
+                if ext == "ps1":
+                    return run_cmd_for_ps1(p, cmd, args)
+                if ext == "py":
+                    code = (
+                        "import runpy,sys; ns=runpy.run_path(%r); "
+                        "f=ns.get('main'); sys.exit(int(f(sys.argv[1:]) or 0) if callable(f) else 0)"
+                    ) % (str(p),)
+                    return subprocess.call(["python3", "-c", code, *args])
+                return subprocess.call(["bash", str(p), *args])
 
-    # Attempt on-demand fetch (policy A: only when missing)
-    fetched = _try_fetch(cmd, reg, bucket_hint)
+    # Attempt on-demand fetch for first available ext/bucket
+    fetched = _try_fetch_any(cmd, reg, bucket_hint)
     if fetched:
+        path, ext = fetched
         if help_requested:
-            return run_usage_for_ps1(fetched, cmd)
-        return run_cmd_for_ps1(fetched, cmd, args)
+            if ext == "ps1":
+                return run_usage_for_ps1(path, cmd)
+            print(f"nuro {cmd} - no usage available")
+            return 0
+        if ext == "ps1":
+            return run_cmd_for_ps1(path, cmd, args)
+        if ext == "py":
+            code = (
+                "import runpy,sys; ns=runpy.run_path(%r); "
+                "f=ns.get('main'); sys.exit(int(f(sys.argv[1:]) or 0) if callable(f) else 0)"
+            ) % (str(path),)
+            return subprocess.call(["python3", "-c", code, *args])
+        return subprocess.call(["bash", str(path), *args])
 
-    # Fallback to Python implementation (if any)
-    try:
-        mod_name = f"nuro.commands.{cmd}"
-        mod = __import__(mod_name, fromlist=["main"])
-        if hasattr(mod, "main"):
-            return int(mod.main(args) or 0)
-        raise ImportError
-    except Exception:
-        raise RuntimeError(f"command '{cmd}' not found in any bucket or python implementation")
+    raise RuntimeError(f"command '{cmd}' not found in any bucket")

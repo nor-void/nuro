@@ -14,8 +14,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
-    # Parse global flags: --debug / --no-debug
+    # Parse global flags: --debug / --no-debug / --refresh (usage refresh)
     dbg = None
+    refresh_usage = False
     filtered: List[str] = []
     it = iter(argv)
     for a in it:
@@ -24,6 +25,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
         if a in ("--no-debug",):
             dbg = False
+            continue
+        if a in ("--refresh",):
+            refresh_usage = True
             continue
         filtered.append(a)
     argv = filtered
@@ -35,7 +39,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ensure_nuro_tree()
 
     if not argv:
-        print_root_usage()
+        print_root_usage(refresh=refresh_usage)
         return 0
 
     name = argv[0]
@@ -43,7 +47,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # help/version shortcut: nuro -h/--help, nuro --version/-V
     if name in ("-h", "--help", "/?"):
-        print_root_usage()
+        print_root_usage(refresh=refresh_usage)
         return 0
     if name in ("--version", "-V"):
         print(__version__)

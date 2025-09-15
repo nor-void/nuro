@@ -6,15 +6,17 @@ import urllib.request
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
-from .paths import ps1_dir
+from .paths import ps1_dir, cache_dir, cmds_cache_base
 from .debuglog import debug
 from . import __version__
 from .registry import load_registry
 from .config import official_bucket_base, load_app_config
 from .pshost import run_usage_for_ps1_capture
+from .buckets import resolve_cmd_source_with_meta, fetch_to
 from .paths import logs_dir, ensure_tree
 from urllib.parse import urlparse
-import tempfile
+import shutil
+import unicodedata
 
 
 def _list_local_commands() -> List[str]:
@@ -55,7 +57,7 @@ def _list_remote_commands() -> List[str]:
         if not parsed:
             return []
         owner, repo, ref = parsed
-        # If registry has an 'official' bucket with sha1-hash, use it as ref
+        # If registry has an 'official' bucket with sha1-hash, use it as ref for listing
         reg = load_registry()
         for b in reg.get("buckets", []):
             if b.get("name") == "official":
@@ -78,66 +80,146 @@ def _list_remote_commands() -> List[str]:
         return []
 
 
-def print_root_usage() -> None:
+ # Python-implemented commands are no longer enumerated or displayed here.
+
+
+def print_root_usage(refresh: bool = False) -> None:
     print(f"nuro v{__version__} — minimal runner\n")
     print("USAGE:")
     print("  nuro <command> [args...]")
     print("  nuro <command> -h|--help|/?\n")
     print("GLOBAL OPTIONS:")
     print("  --debug | -d       Enable debug logging")
-    print("  --no-debug         Disable debug logging\n")
-    # Try online list (from official bucket), fallback to local/offline
+    print("  --no-debug         Disable debug logging")
+    print("  --refresh          Refresh command list from GitHub when no args\n")
+    # Optional full refresh: clear ps1 and usage caches first
+    if refresh:
+        try:
+            # Clear all script caches under cache/cmds (ps1/py/sh)
+            shutil.rmtree(cmds_cache_base(), ignore_errors=True)
+            # Legacy ps1 cache location (pre-migration); remove if present
+            legacy_ps1 = Path(os.path.expanduser("~")) / ".nuro" / "ps1"
+            shutil.rmtree(legacy_ps1, ignore_errors=True)
+            # Usage text cache
+            shutil.rmtree(cache_dir() / "usage", ignore_errors=True)
+        except Exception:
+            pass
+
+    # Build commands list depending on refresh policy
     lines: List[str] = []
-    remote = _list_remote_commands()
-    if remote:
-        lines = remote
+    if refresh:
+        remote = _list_remote_commands()
+        if remote:
+            lines = remote
     if not lines:
-        lines = _list_local_commands()
+        local_only = _list_local_commands()
+        if local_only:
+            lines = local_only
+        else:
+            # Cache empty -> allow remote listing once
+            remote = _list_remote_commands()
+            if remote:
+                lines = remote
+    # Prepare rows for output (from ps1 buckets and python commands)
+    rows: List[List[str]] = []
     if lines:
+        # Helper to compute display width considering full-width characters
+        def _disp_len(s: str) -> int:
+            w = 0
+            for ch in s:
+                e = unicodedata.east_asian_width(ch)
+                w += 2 if e in ("F", "W") else 1
+            return w
+
+        def _pad(s: str, width: int) -> str:
+            cur = _disp_len(s)
+            if cur >= width:
+                return s
+            return s + (" " * (width - cur))
+
+        headers = ["コマンド", "種別", "使用例"]
+        # Try to enrich with one-line help by invoking NuroUsage_* using cache under ~/.nuro/ps1/official
+        bucket_name = "official"
+        ensure_tree()
+        ps1_cache_dir = ps1_dir() / bucket_name
+        ps1_cache_dir.mkdir(parents=True, exist_ok=True)
+        # Determine official bucket from registry or synthesize default
+        reg = load_registry()
+        official_bucket = None
+        for b in reg.get("buckets", []):
+            if b.get("name") == bucket_name:
+                official_bucket = b
+                break
+        if official_bucket is None:
+            cfg = load_app_config()
+            base = official_bucket_base(cfg)
+            official_bucket = {"name": bucket_name, "uri": f"raw::{base}", "priority": 100, "trusted": True}
+        # usage text cache directory
+        ucache_dir = cache_dir() / "usage" / bucket_name
+        ucache_dir.mkdir(parents=True, exist_ok=True)
+
+        for n in lines:
+            help_line = ""
+            try:
+                ufile = ucache_dir / f"{n}.txt"
+                cached_text: str | None = None
+                # Use cache when not refreshing
+                if not refresh and ufile.exists():
+                    cached_text = ufile.read_text(encoding="utf-8", errors="replace")
+                if cached_text is None:
+                    # Ensure ps1 cached, then capture usage and update cache
+                    # Note: ps1 cache lives under ~/.nuro/ps1/official
+                    t = (ps1_cache_dir / f"{n}.ps1")
+                    if not t.exists():
+                        src = resolve_cmd_source_with_meta(official_bucket, n)
+                        if src.get("kind") == "remote":
+                            fetch_to(t, src["url"], timeout=10)
+                    out = ""
+                    if t.exists():
+                        out = run_usage_for_ps1_capture(t, n) or ""
+                    # update cache file (even if empty, to avoid repeated fetches)
+                    try:
+                        ufile.write_text(out, encoding="utf-8")
+                    except Exception:
+                        pass
+                    cached_text = out
+                # compute first line for table
+                if cached_text:
+                    help_line = cached_text.splitlines()[0].strip()
+                else:
+                    help_line = ""
+            except Exception:
+                help_line = ""
+            rows.append([n, bucket_name, help_line])
+
+    if rows:
+        # Compute column widths and print table
+        def _disp_len(s: str) -> int:
+            w = 0
+            for ch in s:
+                e = unicodedata.east_asian_width(ch)
+                w += 2 if e in ("F", "W") else 1
+            return w
+
+        def _pad(s: str, width: int) -> str:
+            cur = _disp_len(s)
+            if cur >= width:
+                return s
+            return s + (" " * (width - cur))
+
+        headers = ["コマンド", "種別", "使用例"]
+        widths = [0, 0, 0]
+        for i, h in enumerate(headers):
+            widths[i] = max(widths[i], _disp_len(h))
+        for r in rows:
+            for i in range(3):
+                widths[i] = max(widths[i], _disp_len(r[i]))
+
         print("COMMANDS (known):")
         print("")
-        print("| コマンド | 種別 | 使用例 |")
-        print("|---|---|---|")
-        # Try to enrich with one-line help by invoking NuroUsage_*
-        cfg = load_app_config()
-        base = official_bucket_base(cfg)
-        parsed = _parse_owner_repo_ref_from_base(base)
-        bucket_name = "official"
-        if parsed:
-            # Prepare temp dir for fetched scripts
-            ensure_tree()
-            tmpdir = Path(tempfile.gettempdir()) / "nuro-usage"
-            tmpdir.mkdir(parents=True, exist_ok=True)
-            for n in lines:
-                help_line = ""
-                try:
-                    # fetch raw script to temp and run usage capture
-                    owner, repo, ref = parsed
-                    # Override ref with commit if configured
-                    reg = load_registry()
-                    for b in reg.get("buckets", []):
-                        if b.get("name") == "official":
-                            sha = str(b.get("sha1-hash") or "").strip()
-                            if sha:
-                                ref = sha
-                            break
-                    raw_base = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}"
-                    raw_url = f"{raw_base}/cmds/{n}.ps1"
-                    req = urllib.request.Request(raw_url, headers={"User-Agent": "nuro"})
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        code = resp.read().decode("utf-8", errors="replace")
-                    t = tmpdir / f"{n}.ps1"
-                    t.write_text(code, encoding="utf-8")
-                    out = run_usage_for_ps1_capture(t, n)
-                    if out:
-                        help_line = out.splitlines()[0].strip()
-                except Exception:
-                    help_line = ""
-                # Escape pipes for Markdown table
-                help_line = help_line.replace('|', '\\|') if help_line else ""
-                print(f"| {n} | {bucket_name} | {help_line} |")
-        else:
-            for n in lines:
-                print(f"| {n} | local |  |")
+        print("  " + "  ".join(_pad(headers[i], widths[i]) for i in range(3)))
+        print("  " + "  ".join("-" * widths[i] for i in range(3)))
+        for r in rows:
+            print("  " + "  ".join(_pad(r[i], widths[i]) for i in range(3)))
     else:
         print("(no commands listed / offline)")
