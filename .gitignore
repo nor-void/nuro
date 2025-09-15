@@ -8,3 +8,4 @@ codex.*
 temporary.md
 __pycache__/
 /cmds_deprecated
+.nor*
