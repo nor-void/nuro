@@ -101,7 +101,7 @@ def run_usage_for_ps1(target: Path, cmd_name: str) -> int:
             f"if (Get-Command {usage_fn} -ErrorAction SilentlyContinue) {{ & {usage_fn} }} else {{ Write-Output 'usage unavailable' }}\n"
         )
         wrapper.write_text(content, encoding="utf-8")
-        return run_ps_file(wrapper, [])
+    return run_ps_file(wrapper, [])
     finally:
         try:
             if wrapper.exists():
@@ -109,6 +109,36 @@ def run_usage_for_ps1(target: Path, cmd_name: str) -> int:
         except Exception:
             pass
 
+
+def run_usage_for_ps1_capture(target: Path, cmd_name: str) -> str:
+    """Invoke NuroUsage_<name> from a PS1 file and capture stdout as text.
+
+    Returns the captured stdout (may be empty). Errors are swallowed and
+    returned as empty string.
+    """
+    shell = find_powershell()
+    wrapper = target.parent / (f"._nuro_usage_{cmd_name}.ps1")
+    try:
+        usage_fn = f"NuroUsage_{cmd_name}"
+        content = (
+            f". '{target}'\n"
+            f"if (Get-Command {usage_fn} -ErrorAction SilentlyContinue) {{ & {usage_fn} }} else {{ Write-Output 'usage unavailable' }}\n"
+        )
+        wrapper.write_text(content, encoding="utf-8")
+        cmd = shell + ["-NoProfile", "-File", str(wrapper)]
+        debug(f"Invoking PowerShell (capture): {' '.join(cmd)}")
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        out = proc.stdout or ""
+        return out.strip()
+    except Exception as e:
+        debug(f"run_usage_for_ps1_capture failed: {e}")
+        return ""
+    finally:
+        try:
+            if wrapper.exists():
+                wrapper.unlink()
+        except Exception:
+            pass
 
 def run_cmd_for_ps1(target: Path, cmd_name: str, args: Iterable[str]) -> int:
     # Create a temp wrapper that dot-sources the target and calls NuroCmd_<name>
