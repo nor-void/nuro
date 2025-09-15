@@ -101,7 +101,7 @@ def run_usage_for_ps1(target: Path, cmd_name: str) -> int:
             f"if (Get-Command {usage_fn} -ErrorAction SilentlyContinue) {{ & {usage_fn} }} else {{ Write-Output 'usage unavailable' }}\n"
         )
         wrapper.write_text(content, encoding="utf-8")
-    return run_ps_file(wrapper, [])
+        return run_ps_file(wrapper, [])
     finally:
         try:
             if wrapper.exists():
