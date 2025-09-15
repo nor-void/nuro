@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import subprocess
@@ -135,7 +136,8 @@ def run_command(name: str, args: List[str]) -> int:
                 if ext == "ps1":
                     return run_cmd_for_ps1(p, cmd, args)
                 if ext == "py":
-                    _ensure_script_requirements(p)
+                    if not _ensure_script_requirements(p):
+                        return 1
                     code = (
                         "import runpy,sys,inspect; ns=runpy.run_path(%r); "
                         "f=ns.get('main'); "
@@ -149,7 +151,8 @@ def run_command(name: str, args: List[str]) -> int:
                         "else:\n"
                         "    sys.exit(0)\n"
                     ) % (str(p),)
-                    return subprocess.call(["python3", "-c", code, *args])
+                    exe = _python_exe()
+                    return subprocess.call([exe, "-c", code, *args])
                 return subprocess.call(["bash", str(p), *args])
 
     # Attempt on-demand fetch for first available ext/bucket
@@ -164,7 +167,8 @@ def run_command(name: str, args: List[str]) -> int:
         if ext == "ps1":
             return run_cmd_for_ps1(path, cmd, args)
         if ext == "py":
-            _ensure_script_requirements(path)
+            if not _ensure_script_requirements(path):
+                return 1
             code = (
                 "import runpy,sys,inspect; ns=runpy.run_path(%r); "
                 "f=ns.get('main'); "
@@ -178,7 +182,8 @@ def run_command(name: str, args: List[str]) -> int:
                 "else:\n"
                 "    sys.exit(0)\n"
             ) % (str(path),)
-            return subprocess.call(["python3", "-c", code, *args])
+            exe = _python_exe()
+            return subprocess.call([exe, "-c", code, *args])
         return subprocess.call(["bash", str(path), *args])
 
     raise RuntimeError(f"command '{cmd}' not found in any bucket")
@@ -233,13 +238,33 @@ def _is_req_satisfied(spec: str) -> bool:
     return True
 
 
-def _ensure_script_requirements(path: Path) -> None:
+def _ensure_script_requirements(path: Path) -> bool:
     reqs = _extract_requirements_from_file(path)
     if not reqs:
-        return
+        return True
     debug(f"Checking script requirements for {path}")
     cache = _load_reqs_cache()
     changed = False
+    # Determine if a nuro-managed venv exists; if not, we do not modify system/user site-packages
+    have_venv = _is_venv_python(_python_exe())
+    # If any requirement is missing and no venv, inform and return without attempting installs
+    missing_specs: List[str] = []
+    for spec in reqs:
+        if cache.get(spec) is True:
+            continue
+        if not _is_req_satisfied(spec):
+            missing_specs.append(spec)
+    if missing_specs and not have_venv:
+        msg = (
+            "nuro: Python dependency install requires ~/.nuro/venv. "
+            "Please provision it (e.g., run bootstrap/get.nuro.ps1)."
+        )
+        try:
+            sys.stderr.write(msg + "\n")
+        except Exception:
+            print(msg)
+        debug("Dependency install skipped: ~/.nuro/venv not found")
+        return False
     for spec in reqs:
         if cache.get(spec) is True:
             debug(f"Requirement cached as satisfied: {spec}")
@@ -256,8 +281,11 @@ def _ensure_script_requirements(path: Path) -> None:
                 # Suppress pip's stdout/stderr; rely on debug() for reporting
                 return subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+            exe = _python_exe()
+            # Require installs to go into nuro-managed venv
+            base = [exe, "-m", "pip", "install"]
             cmds = [
-                ["python3", "-m", "pip", "install", spec],
+                base + [spec],
                 ["pip3", "install", spec],
                 ["pip", "install", spec],
             ]
@@ -281,6 +309,33 @@ def _ensure_script_requirements(path: Path) -> None:
             debug(f"Exception during pip install for {spec}: {e}")
     if changed:
         _save_reqs_cache(cache)
+    return True
+
+
+def _python_exe() -> str:
+    # Prefer nuro-managed venv if present; else fall back to python3 on PATH
+    home = os.path.expanduser("~")
+    # Windows-style path from bootstrap is ~/.nuro/venv/Scripts/python.exe
+    win = Path(home) / ".nuro" / "venv" / "Scripts" / "python.exe"
+    posix = Path(home) / ".nuro" / "venv" / "bin" / "python3"
+    if win.exists():
+        debug(f"Using venv python: {win}")
+        return str(win)
+    if posix.exists():
+        debug(f"Using venv python: {posix}")
+        return str(posix)
+    return "python3"
+
+
+def _is_venv_python(exe: str) -> bool:
+    try:
+        exe_path = Path(exe)
+        return (
+            (".nuro" in exe_path.as_posix() and "venv" in exe_path.as_posix())
+            or bool(os.environ.get("VIRTUAL_ENV"))
+        )
+    except Exception:
+        return False
 
 def _reqs_cache_path() -> Path:
     return cache_dir() / "py-reqs.json"
