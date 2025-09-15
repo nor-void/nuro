@@ -6,7 +6,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from .paths import ensure_tree, ps1_dir
 from .registry import load_registry
-from .buckets import resolve_cmd_source, fetch_to
+from .buckets import resolve_cmd_source_with_meta, fetch_to
 from .pshost import run_ps_file, run_usage_for_ps1, run_cmd_for_ps1
 
 
@@ -53,29 +53,30 @@ def _local_ps1_paths(cmd: str, bucket_hint: Optional[str], reg: Dict) -> List[Pa
 def _try_fetch(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[Path]:
     base = ps1_dir()
     # determine fetch order: bucket_hint -> pin -> priority
-    order: List[Tuple[str, str]] = []  # (bucket_name, uri)
+    order: List[Dict] = []  # bucket dicts in resolution order
     buckets_by_name = {b["name"]: b for b in reg.get("buckets", [])}
     if bucket_hint and bucket_hint in buckets_by_name:
         b = buckets_by_name[bucket_hint]
-        order.append((b["name"], b["uri"]))
+        order.append(b)
     pins = reg.get("pins", {}) or {}
     pinned = pins.get(cmd)
     if pinned and pinned in buckets_by_name and (not bucket_hint or pinned != bucket_hint):
         b = buckets_by_name[pinned]
-        order.append((b["name"], b["uri"]))
+        order.append(b)
     sorted_buckets = sorted(reg.get("buckets", []), key=lambda x: int(x.get("priority", 0)), reverse=True)
     for b in sorted_buckets:
         if (bucket_hint and b["name"] == bucket_hint) or (pinned and b["name"] == pinned):
             # already included
             pass
-        order.append((b["name"], b["uri"]))
+        order.append(b)
 
     # Try fetching from each until success; do not overwrite existing (policy A)
-    for name, uri in order:
+    for b in order:
+        name = str(b.get("name", ""))
         dest = base / name / f"{cmd}.ps1"
         if dest.exists():
             return dest
-        src = resolve_cmd_source(uri, cmd)
+        src = resolve_cmd_source_with_meta(b, cmd)
         if src.get("kind") == "local":
             local_path = Path(src["path"])  # may be absolute
             if local_path.exists():

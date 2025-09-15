@@ -55,6 +55,14 @@ def _list_remote_commands() -> List[str]:
         if not parsed:
             return []
         owner, repo, ref = parsed
+        # If registry has an 'official' bucket with sha1-hash, use it as ref
+        reg = load_registry()
+        for b in reg.get("buckets", []):
+            if b.get("name") == "official":
+                sha = str(b.get("sha1-hash") or "").strip()
+                if sha:
+                    ref = sha
+                break
         api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/cmds?ref={ref}"
         debug(f"GitHub API URL (list commands): {api_url}")
         req = urllib.request.Request(api_url, headers={"User-Agent": "nuro"})
@@ -101,7 +109,17 @@ def print_root_usage() -> None:
                 help_line = ""
                 try:
                     # fetch raw script to temp and run usage capture
-                    raw_url = f"{base.rstrip('/')}/cmds/{n}.ps1"
+                    owner, repo, ref = parsed
+                    # Override ref with commit if configured
+                    reg = load_registry()
+                    for b in reg.get("buckets", []):
+                        if b.get("name") == "official":
+                            sha = str(b.get("sha1-hash") or "").strip()
+                            if sha:
+                                ref = sha
+                            break
+                    raw_base = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}"
+                    raw_url = f"{raw_base}/cmds/{n}.ps1"
                     req = urllib.request.Request(raw_url, headers={"User-Agent": "nuro"})
                     with urllib.request.urlopen(req, timeout=10) as resp:
                         code = resp.read().decode("utf-8", errors="replace")
