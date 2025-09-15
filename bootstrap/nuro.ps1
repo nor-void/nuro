@@ -33,19 +33,46 @@ if ($env:NURO_DEBUG -eq '1') {
 }
 
 #================================================================================
-# ref / base
+# Unified config for bucket base (~/.nuro/config/config.json)
 #================================================================================
-$Ref  = $env:NURO_REF
-function Normalize-Ref([string]$r) {
-  if (-not $r) { return 'main' }
-  if ($r -like 'refs/heads/*') { return $r.Substring(11) }
-  if ($r -like 'refs/tags/*')  { return $r.Substring(10) }
-  return $r
+$NURO_HOME   = Join-Path ($env:USERPROFILE ?? $HOME) ".nuro"
+$NURO_CONFIG = Join-Path $NURO_HOME "config"
+$APP_CONFIG  = Join-Path $NURO_CONFIG "config.json"
+
+function Ensure-NuroDirs {
+  if (-not (Test-Path $NURO_HOME))   { New-Item -ItemType Directory -Path $NURO_HOME   | Out-Null }
+  if (-not (Test-Path $NURO_CONFIG)) { New-Item -ItemType Directory -Path $NURO_CONFIG | Out-Null }
 }
-$NormRef = Normalize-Ref $Ref
-$Base = "https://raw.githubusercontent.com/mr-certain-a/nuro/$NormRef"
-$Owner = "mr-certain-a"
-$Repo  = "nuro"
+
+function Get-DefaultAppConfig {
+  # Default official bucket base (commands under "cmds/")
+  [pscustomobject]@{ official_bucket_base = 'https://raw.githubusercontent.com/nor-void/nuro' }
+}
+
+function Load-NuroAppConfig {
+  Ensure-NuroDirs
+  if (-not (Test-Path $APP_CONFIG)) {
+    $def = Get-DefaultAppConfig
+    ($def | ConvertTo-Json -Depth 4) | Set-Content -Encoding UTF8 $APP_CONFIG
+    return $def
+  }
+  try {
+    $raw = Get-Content $APP_CONFIG -Raw -Encoding UTF8
+    $data = if ([string]::IsNullOrWhiteSpace($raw)) { [pscustomobject]@{} } else { $raw | ConvertFrom-Json }
+    if ($null -eq $data -or $data.GetType().Name -notin @('Hashtable','PSCustomObject')) { throw 'broken' }
+    if (-not $data.official_bucket_base) {
+      $data | Add-Member -NotePropertyName official_bucket_base -NotePropertyValue (Get-DefaultAppConfig).official_bucket_base -Force
+    }
+    return $data
+  } catch {
+    $def = Get-DefaultAppConfig
+    ($def | ConvertTo-Json -Depth 4) | Set-Content -Encoding UTF8 $APP_CONFIG
+    return $def
+  }
+}
+
+$AppCfg = Load-NuroAppConfig
+$Base   = ($AppCfg.official_bucket_base.TrimEnd('/'))
 
 #================================================================================
 # === Bucket registry (local JSON) ===
@@ -55,12 +82,11 @@ $NURO_CONFIG = Join-Path $NURO_HOME "config"
 $BUCKET_FILE = Join-Path $NURO_CONFIG "buckets.json"
 
 function Get-NuroDefaultRegistry {
-  $norm = Normalize-Ref $env:NURO_REF
   [pscustomobject]@{
     buckets = @(
       [pscustomobject]@{
         name     = 'official'
-        uri      = "github::mr-certain-a/nuro@$norm"
+        uri      = ("raw::{0}" -f $Base)
         priority = 100
         trusted  = $true
       }
@@ -185,10 +211,10 @@ function Parse-BucketUri([string]$uri) {
 function Resolve-CmdSource([string]$bucketUri,[string]$cmdName) {
   $p = Parse-BucketUri $bucketUri
   switch ($p.type) {
-    'github' { return @{ kind='remote'; url=("{0}/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) } }
-    'raw'    { return @{ kind='remote'; url=("{0}/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) } }
+    'github' { return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) } }
+    'raw'    { return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) } }
     'local'  {
-      $path = Join-Path $p.base "$cmdName.ps1"
+      $path = Join-Path (Join-Path $p.base 'cmds') "$cmdName.ps1"
       return @{ kind='local'; path=$path }
     }
   }
@@ -394,7 +420,14 @@ function Invoke-RemoteCmd {
 }
 
 function Get-AllCommandsUsage {
-  $apiUrl = "https://api.github.com/repos/$Owner/$Repo/contents/cmds"
+  # Parse owner/repo[/ref] from $Base to use GitHub contents API
+  $owner = $null; $repo = $null; $ref = 'main'
+  if ($Base -match '^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)(?:/([^/]+))?') {
+    $owner = $Matches[1]; $repo = $Matches[2]
+    if ($Matches.Count -ge 4 -and $Matches[3]) { $ref = $Matches[3] }
+  }
+  if (-not $owner -or -not $repo) { return @() }
+  $apiUrl = "https://api.github.com/repos/$owner/$repo/contents/cmds?ref=$ref"
   try { $files = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing } catch { return @() }
   $lines = @()
 

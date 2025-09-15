@@ -13,16 +13,20 @@ function NuroCmd_bucket {
   # === 同じレジストリ/ヘルパ（本体側と一致させる） ===
   $NURO_HOME   = Join-Path ($env:USERPROFILE ?? $HOME) ".nuro"
   $NURO_CONFIG = Join-Path $NURO_HOME "config"
+  $APP_CONFIG  = Join-Path $NURO_CONFIG "config.json"
+  function Ensure-NuroDirs { if (-not (Test-Path $NURO_CONFIG)) { New-Item -ItemType Directory -Path $NURO_CONFIG | Out-Null } }
+  function Get-DefaultAppConfig { [pscustomobject]@{ official_bucket_base = 'https://raw.githubusercontent.com/nor-void/nuro' } }
+  function Load-NuroAppConfig {
+    Ensure-NuroDirs
+    if (-not (Test-Path $APP_CONFIG)) { $def = Get-DefaultAppConfig; ($def | ConvertTo-Json -Depth 4) | Set-Content -Encoding UTF8 $APP_CONFIG; return $def }
+    try { $raw = Get-Content $APP_CONFIG -Raw -Encoding UTF8; $data = if ([string]::IsNullOrWhiteSpace($raw)) { [pscustomobject]@{} } else { $raw | ConvertFrom-Json }; if (-not $data.official_bucket_base) { $data | Add-Member -NotePropertyName official_bucket_base -NotePropertyValue (Get-DefaultAppConfig).official_bucket_base -Force }; return $data } catch { $def = Get-DefaultAppConfig; ($def | ConvertTo-Json -Depth 4) | Set-Content -Encoding UTF8 $APP_CONFIG; return $def }
+  }
   $BUCKET_FILE = Join-Path $NURO_CONFIG "buckets.json"
   function Initialize-NuroRegistry {
-    if (-not (Test-Path $NURO_CONFIG)) { New-Item -ItemType Directory -Path $NURO_CONFIG | Out-Null }
+    Ensure-NuroDirs
     if (-not (Test-Path $BUCKET_FILE)) {
-      $obj = @{
-        buckets = @(
-          @{ name='official'; uri=("github::mr-certain-a/nuro@refs/heads/main"); priority=100; trusted=$true }
-        )
-        pins = @{}
-      }
+      $cfg = Load-NuroAppConfig; $base = $cfg.official_bucket_base.TrimEnd('/')
+      $obj = @{ buckets = @(@{ name='official'; uri=("raw::{0}" -f $base); priority=100; trusted=$true }); pins = @{} }
       $obj | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $BUCKET_FILE
     }
   }

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .paths import buckets_path, ensure_tree
-from .config import load_github_config, repo_and_ref_from_config
+from .config import load_app_config, official_bucket_base
 
 
 def _normalize_ref(ref: Optional[str]) -> str:
@@ -21,14 +21,15 @@ def _normalize_ref(ref: Optional[str]) -> str:
 
 
 def _default_registry() -> Dict[str, Any]:
-    # Load GitHub settings from external file with env-compatible defaults
-    cfg = load_github_config()
-    repo, ref = repo_and_ref_from_config(cfg)
+    # Load base URL from unified config
+    cfg = load_app_config()
+    base = official_bucket_base(cfg)
     return {
         "buckets": [
             {
                 "name": "official",
-                "uri": f"github::{repo}@{ref}",
+                # Commands are expected under "cmds/" beneath this base
+                "uri": f"raw::{base}",
                 "priority": 100,
                 "trusted": True,
             }

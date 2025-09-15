@@ -10,6 +10,8 @@ from .paths import ps1_dir
 from .debuglog import debug
 from . import __version__
 from .registry import load_registry
+from .config import official_bucket_base, load_app_config
+from urllib.parse import urlparse
 
 
 def _list_local_commands() -> List[str]:
@@ -26,32 +28,37 @@ def _list_local_commands() -> List[str]:
     return sorted(names)
 
 
-def _list_remote_commands_from_github() -> List[str]:
-    reg = load_registry()
-    # prefer official bucket
-    official = None
-    for b in reg.get("buckets", []):
-        if b.get("name") == "official":
-            official = b
-            break
-    if not official:
+def _list_remote_commands() -> List[str]:
+    """List commands from the official bucket via GitHub API if possible.
+
+    We parse owner/repo from the configured raw base URL and query
+    the GitHub contents API for the "cmds" folder. If parsing fails,
+    we return an empty list.
+    """
+    try:
+        cfg = load_app_config()
+        base = official_bucket_base(cfg)
+        # Expect: https://raw.githubusercontent.com/<owner>/<repo>[/*]
+        u = urlparse(base)
+        parts = [p for p in u.path.split("/") if p]
+        if len(parts) < 2 or u.netloc != "raw.githubusercontent.com":
+            return []
+        owner, repo = parts[0], parts[1]
+        # Try to detect ref if present in base, otherwise default to main
+        ref = parts[2] if len(parts) >= 3 and parts[2] else "main"
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/cmds?ref={ref}"
+        debug(f"GitHub API URL (list commands): {api_url}")
+        req = urllib.request.Request(api_url, headers={"User-Agent": "nuro"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        names: List[str] = []
+        for item in data:
+            name = item.get("name", "")
+            if name.lower().endswith(".ps1"):
+                names.append(Path(name).stem)
+        return sorted(names)
+    except Exception:
         return []
-    uri = official.get("uri", "")
-    if not uri.startswith("github::"):
-        return []
-    spec = uri[8:]
-    repo, ref = (spec.split("@", 1) + ["main"])[:2]
-    api_url = f"https://api.github.com/repos/{repo}/contents/cmds?ref={ref}"
-    debug(f"GitHub API URL (list commands): {api_url}")
-    req = urllib.request.Request(api_url, headers={"User-Agent": "nuro"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    names: List[str] = []
-    for item in data:
-        name = item.get("name", "")
-        if name.lower().endswith(".ps1"):
-            names.append(Path(name).stem)
-    return sorted(names)
 
 
 def print_root_usage() -> None:
@@ -62,14 +69,11 @@ def print_root_usage() -> None:
     print("GLOBAL OPTIONS:")
     print("  --debug | -d       Enable debug logging")
     print("  --no-debug         Disable debug logging\n")
-    # Try online list, fallback to local/offline
+    # Try online list (from official bucket), fallback to local/offline
     lines: List[str] = []
-    try:
-        remote = _list_remote_commands_from_github()
-        if remote:
-            lines = remote
-    except Exception:
-        pass
+    remote = _list_remote_commands()
+    if remote:
+        lines = remote
     if not lines:
         lines = _list_local_commands()
     if lines:
