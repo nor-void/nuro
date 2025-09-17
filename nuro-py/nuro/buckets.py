@@ -14,13 +14,28 @@ from .debuglog import debug
 @dataclass
 class BucketSpec:
     type: str  # 'github' | 'raw' | 'local'
-    base: str  # base path or URL (for github/raw this is a URL base to which /cmds/<name>.ps1 is appended)
+    base: str  # base path or URL (for github/raw this is a URL base to which /cmds/<name>.<ext> is appended)
     owner: Optional[str] = None
     repo: Optional[str] = None
     ref: Optional[str] = None  # branch/tag/ref default (ignored if an explicit commit is provided)
 
 
 _GITHUB_CONTENTS_CACHE: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
+
+
+def _parse_raw_github_components(base: str) -> Optional[Tuple[str, str, str]]:
+    try:
+        parsed = urlparse(base)
+    except Exception:
+        return None
+    if parsed.netloc.lower() != "raw.githubusercontent.com":
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 2:
+        return None
+    owner, repo = parts[0], parts[1]
+    ref = parts[2] if len(parts) >= 3 and parts[2] else "main"
+    return owner, repo, ref
 
 
 def parse_bucket_uri(uri: str) -> BucketSpec:
@@ -37,7 +52,11 @@ def parse_bucket_uri(uri: str) -> BucketSpec:
         return BucketSpec("github", base, owner=owner, repo=repo_name, ref=ref)
     if uri.startswith("raw::"):
         base = uri[5:].rstrip("/")
-        return BucketSpec("raw", base)
+        owner = repo_name = ref = None
+        parsed = _parse_raw_github_components(base)
+        if parsed:
+            owner, repo_name, ref = parsed
+        return BucketSpec("raw", base, owner=owner, repo=repo_name, ref=ref)
     if uri.startswith("local::"):
         return BucketSpec("local", uri[7:])
     # treat everything else as local path
@@ -64,6 +83,24 @@ def _normalize_raw_base(base: str) -> str:
         parsed = parsed._replace(path=new_path)
         trimmed = urlunparse(parsed).rstrip("/")
     return trimmed
+
+
+def _raw_base_with_ref(base: str, ref: str) -> str:
+    try:
+        parsed = urlparse(base)
+    except Exception:
+        return base.rstrip("/")
+    if parsed.netloc.lower() != "raw.githubusercontent.com":
+        return base.rstrip("/")
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 2:
+        return base.rstrip("/")
+    if len(parts) >= 3:
+        parts[2] = ref
+    else:
+        parts.append(ref)
+    new_path = "/" + "/".join(parts)
+    return urlunparse(parsed._replace(path=new_path)).rstrip("/")
 
 
 def _list_github_cmds(owner: str, repo: str, ref: str) -> List[Dict[str, Any]]:
@@ -122,6 +159,10 @@ def resolve_cmd_source(bucket_uri: str, cmd: str) -> Dict[str, str]:
         )
         return {"kind": "remote", "url": url}
     if p.type == "raw":
+        if p.owner and p.repo:
+            url = _github_download_url(p.owner, p.repo, p.ref or "main", f"{cmd}.ps1")
+            if url:
+                return {"kind": "remote", "url": url}
         base = _normalize_raw_base(p.base.rstrip("/"))
         url = f"{base}/cmds/{cmd}.ps1?cb={uuid4()}"
         debug(f"Resolved raw source: base={base} cmd={cmd} ext=ps1 uri={bucket_uri} -> {url}")
@@ -163,7 +204,24 @@ def resolve_cmd_source_with_meta(bucket: Dict[str, object], cmd: str, ext: str =
         )
         return {"kind": "remote", "url": url}
     if p.type == "raw":
-        base = _normalize_raw_base(p.base)
+        sha = str(bucket.get("sha1-hash") or "").strip()
+        ref = sha if sha else (p.ref or "main")
+        if p.owner and p.repo:
+            url = _github_download_url(p.owner, p.repo, ref, filename)
+            if url:
+                debug(
+                    f"Resolved raw GitHub source via contents: bucket={bucket.get('name')} cmd={cmd} ext={ext} ref={ref} -> {url}"
+                )
+                return {"kind": "remote", "url": url}
+            base = _raw_base_with_ref(p.base, ref)
+        else:
+            base = _normalize_raw_base(p.base)
+            if sha:
+                # base does not point to GitHub raw; no way to inject commit, so keep normalized base
+                debug(
+                    f"raw bucket missing GitHub context; using normalized base for {bucket.get('name')} with ref hint {ref}"
+                )
+        base = base.rstrip("/")
         url = f"{base}/cmds/{filename}?cb={uuid4()}"
         debug(f"Resolved raw source: bucket={bucket.get('name')} cmd={cmd} ext={ext} base={base} -> {url}")
         return {"kind": "remote", "url": url}
