@@ -27,7 +27,7 @@ param(
   [string]$SourceDir = './limbo',     # 既定はカレント配下の limbo
 
   [Parameter()]
-  [string]$OutDir = './cmd_staging'   # 既定はカレント配下の cmd_staging
+  [string]$OutDir = './cmds_staging'   # 既定はカレント配下の cmds_staging
 )
 
 $ErrorActionPreference = 'Stop'

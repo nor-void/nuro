@@ -2,6 +2,14 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Debug trace helper
+function Trace([string]$Message) {
+  if ($env:NURO_DEBUG -eq '1') {
+    $ts = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss.fffK')
+    Write-Host ("[nuro:trace] {0} {1}" -f $ts, $Message)
+  }
+}
+
 # Use current PowerShell session by default.
 # To force Python dispatch instead, set: $env:NURO_USE_CURRENT_POWERSHELL = '0'
 $__useCurrentShell = $true
@@ -221,7 +229,7 @@ function Resolve-CmdSource([string]$bucketUri,[string]$cmdName) {
 }
 
 # Commit-aware resolver (uses optional bucket.'sha1-hash' when available)
-function Resolve-CmdSourceWithMeta([object]$bucket,[string]$cmdName) {
+function Resolve-CmdSourceWithMeta([object]$bucket,[string]$cmdName,[string]$ext='ps1') {
   $uri = [string]$bucket.uri
   $sha = ''
   try { $sha = [string]::Copy([string]($bucket.'sha1-hash')) } catch { $sha = '' }
@@ -238,9 +246,13 @@ function Resolve-CmdSourceWithMeta([object]$bucket,[string]$cmdName) {
         $owner = $m.Groups[1].Value; $repo = $m.Groups[2].Value; $ref = $m.Groups[3].Value
         if ($sha) { $ref = $sha }
         $base = "https://raw.githubusercontent.com/$owner/$repo/$ref"
-        return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $base, $cmdName, [Guid]::NewGuid()) }
+        $url = "{0}/cmds/{1}.{2}?cb={3}" -f $base, $cmdName, $ext, [Guid]::NewGuid()
+        Trace "resolve github: bucket=$($bucket.name) cmd=$cmdName ext=$ext ref=$ref sha=$sha url=$url"
+        return @{ kind='remote'; url=$url }
       }
-      return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) }
+      $fallbackUrl = "{0}/cmds/{1}.{2}?cb={3}" -f $p.base, $cmdName, $ext, [Guid]::NewGuid()
+      Trace "resolve github fallback: bucket=$($bucket.name) cmd=$cmdName ext=$ext url=$fallbackUrl"
+      return @{ kind='remote'; url=$fallbackUrl }
     }
     'raw' {
       # If this is a GitHub raw base like https://raw.githubusercontent.com/owner/repo[/ref]
@@ -250,54 +262,120 @@ function Resolve-CmdSourceWithMeta([object]$bucket,[string]$cmdName) {
         if (-not $ref) { $ref = 'main' }
         if ($sha) { $ref = $sha }
         $base = "https://raw.githubusercontent.com/$owner/$repo/$ref"
-        return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $base, $cmdName, [Guid]::NewGuid()) }
+        $url = "{0}/cmds/{1}.{2}?cb={3}" -f $base, $cmdName, $ext, [Guid]::NewGuid()
+        Trace "resolve raw github: bucket=$($bucket.name) cmd=$cmdName ext=$ext ref=$ref sha=$sha url=$url"
+        return @{ kind='remote'; url=$url }
       }
-      return @{ kind='remote'; url=("{0}/cmds/{1}.ps1?cb={2}" -f $p.base, $cmdName, [Guid]::NewGuid()) }
+      $rawUrl = "{0}/cmds/{1}.{2}?cb={3}" -f $p.base, $cmdName, $ext, [Guid]::NewGuid()
+      Trace "resolve raw: bucket=$($bucket.name) cmd=$cmdName ext=$ext url=$rawUrl"
+      return @{ kind='remote'; url=$rawUrl }
     }
     'local' {
-      $path = Join-Path (Join-Path $p.base 'cmds') "$cmdName.ps1"
+      $path = Join-Path (Join-Path $p.base 'cmds') "$cmdName.$ext"
+      Trace "resolve local: bucket=$($bucket.name) cmd=$cmdName ext=$ext path=$path"
       return @{ kind='local'; path=$path }
     }
   }
 }
 
-# 実行（取って dot-source → NuroCmd_* 呼び出し）; Args は後述の Convert-ArgsToHash を使用
+# --- 拡張子別のコマンド実行 ---
+function Invoke-CommandFromBucket {
+  param(
+    [object]$Bucket,
+    [string]$Cmd,
+    [string[]]$Tokens,
+    [string]$Ext
+  )
+
+  $headers = @{ 'Cache-Control'='no-cache'; 'Pragma'='no-cache'; 'User-Agent'='nuro' }
+  $tokenSummary = if ($Tokens) { $Tokens -join ' ' } else { '' }
+  Trace "invoke command: bucket=$($Bucket.name) cmd=$Cmd ext=$Ext tokens='$tokenSummary'"
+  $src = Resolve-CmdSourceWithMeta -bucket $Bucket -cmdName $Cmd -ext $Ext
+
+  $tempPath = $null
+  try {
+    if ($src.kind -eq 'remote') {
+      $tempPath = Join-PathSafe ([IO.Path]::GetTempPath()) ("nuro-" + [IO.Path]::GetRandomFileName() + ".${Ext}")
+      Trace "fetch remote: url=$($src.url) dest=$tempPath"
+      Invoke-WebRequest -Uri $src.url -OutFile $tempPath -UseBasicParsing -Headers $headers | Out-Null
+      Trace "fetch complete: url=$($src.url) bytes=$((Get-Item $tempPath).Length)"
+      $scriptPath = $tempPath
+    } else {
+      if (-not (Test-Path $src.path)) { throw "local script not found: $($src.path)" }
+      Trace "using local script: path=$($src.path)"
+      $scriptPath = $src.path
+    }
+
+    switch ($Ext) {
+      'ps1' {
+        Trace "exec ps1: path=$scriptPath"
+        . $scriptPath
+        $main  = "NuroCmd_$Cmd"
+        $usage = "NuroUsage_$Cmd"
+
+        if ($Tokens -and ($Tokens -contains '-h' -or $Tokens -contains '--help' -or $Tokens -contains '/?')) {
+          Trace "ps1 help requested: cmd=$Cmd"
+          if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host } else { Write-Host "nuro $Cmd - no usage available" }
+          return
+        }
+
+        if (-not (Get-Command $main -ErrorAction SilentlyContinue)) {
+          throw "nuro: command '$Cmd' does not expose function '$main'"
+        }
+
+        $ph = Convert-ArgsToHash -TargetFn $main -Tokens $Tokens
+        if ($ph.Contains('__showHelp')) {
+          if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host } else { Write-Host "nuro $Cmd - no usage available" }
+          return
+        }
+
+        $res = & $main @ph
+        if ($null -ne $res) { Write-Output $res }
+      }
+      'py' {
+        $pyExe = Join-PathSafe (Join-PathSafe (Get-Home) '.nuro') 'venv\Scripts\python.exe'
+        if (-not (Test-Path $pyExe)) { $pyExe = 'python' }
+        Trace "exec py: exe=$pyExe path=$scriptPath tokens='$tokenSummary'"
+        & $pyExe $scriptPath @Tokens
+      }
+      'sh' {
+        $bash = Get-Command 'bash' -ErrorAction SilentlyContinue
+        if (-not $bash) { throw 'bash executable not found (required to run .sh commands)' }
+        Trace "exec sh: bash=$($bash.Source) path=$scriptPath tokens='$tokenSummary'"
+        & $bash.Source $scriptPath @Tokens
+      }
+      default {
+        throw "unsupported extension: $Ext"
+      }
+    }
+  }
+  finally {
+    if ($tempPath) {
+      Trace "cleanup temp file: $tempPath"
+      Remove-Item $tempPath -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+# 実行（ps1 / py / sh を順に試す）
 function Run-FromBucket([object]$bucket,[string]$cmd,[string[]]$tokens) {
-  $src = Resolve-CmdSourceWithMeta $bucket $cmd
-  $H = @{ 'Cache-Control'='no-cache'; 'Pragma'='no-cache'; 'User-Agent'='nuro' }
-
-  $code = $null
-  if ($src.kind -eq 'remote') {
-    $code = Invoke-RestMethod -Uri $src.url -Headers $H -UseBasicParsing
-  } else {
-    if (-not (Test-Path $src.path)) { throw "local script not found: $($src.path)" }
-    $code = Get-Content $src.path -Raw -Encoding UTF8
+  $exts = @('ps1','py','sh')
+  $errors = @()
+  foreach ($ext in $exts) {
+    try {
+      Trace "run-from-bucket: bucket=$($bucket.name) cmd=$cmd attempting ext=$ext"
+      Invoke-CommandFromBucket -Bucket $bucket -Cmd $cmd -Tokens $tokens -Ext $ext
+      return
+    } catch {
+      Trace "run-from-bucket failed: bucket=$($bucket.name) cmd=$cmd ext=$ext message=$($_.Exception.Message)"
+      $errors += "[$ext] $($_.Exception.Message)"
+    }
   }
 
-  $sb = [scriptblock]::Create($code)
-  . $sb
-
-  $main  = "NuroCmd_$cmd"
-  $usage = "NuroUsage_$cmd"
-
-  # help?
-  if ($tokens -and ($tokens -contains '-h' -or $tokens -contains '--help' -or $tokens -contains '/?')) {
-    if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host } else { Write-Host "nuro $cmd - no usage available" }
-    return
+  if ($errors.Count -gt 0) {
+    throw "nuro: command '$cmd' failed for all supported formats:`n$($errors -join "`n")"
   }
-
-  if (-not (Get-Command $main -ErrorAction SilentlyContinue)) {
-    throw "nuro: command '$cmd' does not expose function '$main'"
-  }
-
-  $ph = Convert-ArgsToHash -TargetFn $main -Tokens $tokens
-  if ($ph.Contains('__showHelp')) {
-    if (Get-Command $usage -ErrorAction SilentlyContinue) { (& $usage) | Write-Host } else { Write-Host "nuro $cmd - no usage available" }
-    return
-  }
-
-  $res = & $main @ph
-  if ($null -ne $res) { Write-Output $res }
+  throw "nuro: command '$cmd' not found in any supported format"
 }
 
 #================================================================================
@@ -412,17 +490,13 @@ function Invoke-RemoteCmd {
 
   if ($null -eq $Args) { $Args = @() } else { $Args = @($Args) }
 
-  if ($env:NURO_DEBUG -eq '1') {
-      Write-Host "[nuro:Invoke-RemoteCmd] Name = $Name"
-      Write-Host "[nuro:Invoke-RemoteCmd] Args.Count = $($Args.Count)"
-      for ($i=0; $i -lt $Args.Count; $i++) {
-        Write-Host ("  Args[{0}] = {1}" -f $i, $Args[$i])
-      }
-  }
+  $argSummary = if ($Args.Count -gt 0) { $Args -join ' ' } else { '' }
+  Trace "invoke-remote-cmd: name=$Name args='$argSummary'"
 
   # bucket 指定 (bucket:cmd) の分解
   $bucketHint = $null; $cmd = $Name
   if ($Name -match '^([^:]+):([^:]+)$') { $bucketHint = $Matches[1]; $cmd = $Matches[2] }
+  Trace "parsed command: raw=$Name bucketHint=$bucketHint command=$cmd"
 
   $reg = Load-NuroRegistry
 
@@ -433,11 +507,13 @@ function Invoke-RemoteCmd {
   # pin 優先
   if (-not $bucketHint -and ($pinNames -contains $cmd)) {
     $bucketHint = $reg.pins.$cmd
+    Trace "pin resolved: cmd=$cmd bucket=$bucketHint"
   }
 
   if ($bucketHint) {
     $b = $reg.buckets | Where-Object { $_.name -eq $bucketHint }
     if (-not $b) { throw "bucket '$bucketHint' not found" }
+    Trace "invoking bucket directly: bucket=$bucketHint cmd=$cmd"
     return (Run-FromBucket -bucket $b -cmd $cmd -tokens $Args)
   }
 
@@ -445,6 +521,7 @@ function Invoke-RemoteCmd {
   $cands = $reg.buckets | Sort-Object -Property @{Expression='priority';Descending=$true}
   $errors = @()
   foreach ($b in $cands) {
+    Trace "trying bucket candidate: name=$($b.name) priority=$($b.priority) cmd=$cmd"
     try {
       return (Run-FromBucket -bucket $b -cmd $cmd -tokens $Args)
     } catch {
@@ -453,6 +530,7 @@ function Invoke-RemoteCmd {
   }
   $msg = "nuro: command '$cmd' not found in any bucket."
   if ($errors.Count -gt 0 -and $env:NURO_DEBUG -eq '1') {
+    Trace "all bucket attempts failed: cmd=$cmd errors=$($errors -join '; ')"
     Write-Host ($msg + "`n" + ($errors -join "`n"))
   } else {
     Write-Host $msg
@@ -481,6 +559,7 @@ function Get-AllCommandsUsage {
     }
   } catch { }
   $apiUrl = "https://api.github.com/repos/$owner/$repo/contents/cmds?ref=$ref"
+  Trace "list commands via API: url=$apiUrl"
   try { $files = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing } catch { return @() }
   $lines = @()
 
@@ -502,6 +581,7 @@ function Get-AllCommandsUsage {
       } catch { }
       $rawBase = "https://raw.githubusercontent.com/$owner/$repo/$ref2"
       $url  = "$rawBase/cmds/$($f.name)"
+      Trace "fetch usage script: url=$url"
       try {
         $code = Invoke-RestMethod -Uri $url -UseBasicParsing
         $sb   = [scriptblock]::Create($code)
@@ -532,7 +612,9 @@ function Get-AllCommandsUsage {
 
 
 function nuro {
+  Trace "entry: nuro args='$($args -join ' ')'"
   if ($args.Count -eq 0) {
+    Trace "displaying root usage"
     Write-Host "nuro — minimal runner v$Ver`n"
     Write-Host "USAGE:"
     Write-Host "  nuro <command> [args...]"
