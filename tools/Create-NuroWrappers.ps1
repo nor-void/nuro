@@ -1,3 +1,4 @@
+#!/usr/bin/env pwsh
 <#
 .SYNOPSIS
   limbo/*.ps1 を nuro規格（NuroUsage_*/NuroCmd_*）に自動整形して出力する。
@@ -22,11 +23,11 @@
 
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory)]
-  [string]$SourceDir,                 # 例: .\limbo
+  [Parameter()]
+  [string]$SourceDir = './limbo',     # 既定はカレント配下の limbo
 
-  [Parameter(Mandatory)]
-  [string]$OutDir                     # 例: .\nuro\bucket
+  [Parameter()]
+  [string]$OutDir = './cmd_staging'   # 既定はカレント配下の cmd_staging
 )
 
 $ErrorActionPreference = 'Stop'
@@ -119,27 +120,41 @@ foreach ($file in $files) {
     $cmdFn   = "NuroCmd_$CmdName"
     $usage   = Build-UsageText -DisplayName $DisplayName -Params $ParamAsts
 
-    $content = @"
-# Auto-generated wrapper for nuro (do not edit manually)
-# Source: $($file.FullName)
-
-function $usageFn {
-@"
-$usage
-"@
-}
-
-function $cmdFn {
-    param([string[]]`$args)
-    try {
-$InvokeBlock
-    } catch {
-        Write-Error "`$($cmdFn): $($file.Name): $($_.Exception.Message)"
-        throw
+    $builder = [System.Text.StringBuilder]::new()
+    [void]$builder.AppendLine('# Auto-generated wrapper for nuro (do not edit manually)')
+    [void]$builder.AppendLine("# Source: $($file.FullName)")
+    [void]$builder.AppendLine('')
+    [void]$builder.AppendLine("function $usageFn {")
+    [void]$builder.AppendLine('@"')
+    $usageLines = [System.Collections.Generic.List[string]]::new()
+    $usageLines.AddRange($usage -split "`r?`n")
+    while ($usageLines.Count -gt 0 -and [string]::IsNullOrEmpty($usageLines[$usageLines.Count - 1])) {
+      $usageLines.RemoveAt($usageLines.Count - 1)
     }
-}
-"@
+    foreach ($line in $usageLines) {
+      [void]$builder.AppendLine($line)
+    }
+    [void]$builder.AppendLine('"@')
+    [void]$builder.AppendLine('}')
+    [void]$builder.AppendLine('')
+    [void]$builder.AppendLine("function $cmdFn {")
+    [void]$builder.AppendLine('    param([string[]]`$args)')
+    [void]$builder.AppendLine('    try {')
+    $invokeLines = [System.Collections.Generic.List[string]]::new()
+    $invokeLines.AddRange($InvokeBlock -split "`r?`n")
+    while ($invokeLines.Count -gt 0 -and [string]::IsNullOrEmpty($invokeLines[$invokeLines.Count - 1])) {
+      $invokeLines.RemoveAt($invokeLines.Count - 1)
+    }
+    foreach ($line in $invokeLines) {
+      [void]$builder.AppendLine($line)
+    }
+    [void]$builder.AppendLine('    } catch {')
+    [void]$builder.AppendLine('        Write-Error "`$($cmdFn): $($file.Name): $($_.Exception.Message)"')
+    [void]$builder.AppendLine('        throw')
+    [void]$builder.AppendLine('    }')
+    [void]$builder.AppendLine('}')
 
+    $content = $builder.ToString().TrimEnd("`r", "`n")
     $outPath = Join-Path $OutDir $WrapperFileName
     $content | Set-Content -LiteralPath $outPath -Encoding UTF8 -NoNewline
     Write-Host "Generated: $outPath" -ForegroundColor Green
