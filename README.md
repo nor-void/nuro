@@ -27,10 +27,8 @@ USAGE DISPLAY
   - `--refresh` clears both caches (script and usage) before recreating them.
 - PowerShell (`bootstrap/nuro.ps1`): Prints a simple list when called without args and honors `sha1-hash` for the official bucket when listing and executing commands.
 
-DEBUG LOGGING
-- Default: OFF. Enable with `--debug` or `NURO_DEBUG=1`.
-- When enabled, attempted GitHub URLs and PowerShell invocation commands are printed to console and appended to `~/.nuro/logs/nuro-debug.log`.
-- Disable explicitly with `--no-debug`.
+LOG FILES
+- Detailed activity is appended to `~/.nuro/logs/nuro-debug.log` automatically for troubleshooting.
 
 POWERSHELL INTEGRATION
 - Invoking via `bootstrap/nuro.ps1` uses the current PowerShell session to execute `.ps1` (dot-source + `NuroCmd_<name>`), so changes persist in the session.

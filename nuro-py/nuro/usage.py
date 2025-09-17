@@ -89,8 +89,6 @@ def print_root_usage(refresh: bool = False) -> None:
     print("  nuro <command> [args...]")
     print("  nuro <command> -h|--help|/?\n")
     print("GLOBAL OPTIONS:")
-    print("  --debug | -d       Enable debug logging")
-    print("  --no-debug         Disable debug logging")
     print("  --refresh          Refresh command list from GitHub when no args\n")
     # Optional full refresh: clear ps1 and usage caches first
     if refresh:
