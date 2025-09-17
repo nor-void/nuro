@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
-from .paths import ps1_dir, cache_dir, cmds_cache_base
+from .paths import ps1_dir, cache_dir
 from .debuglog import debug
 from . import __version__
 from .registry import load_registry
@@ -93,15 +93,18 @@ def print_root_usage(refresh: bool = False) -> None:
     # Optional full refresh: clear ps1 and usage caches first
     if refresh:
         try:
-            # Clear all script caches under cache/cmds (ps1/py/sh)
-            shutil.rmtree(cmds_cache_base(), ignore_errors=True)
-            # Legacy ps1 cache location (pre-migration); remove if present
-            legacy_ps1 = Path(os.path.expanduser("~")) / ".nuro" / "ps1"
-            shutil.rmtree(legacy_ps1, ignore_errors=True)
-            # Usage text cache
-            shutil.rmtree(cache_dir() / "usage", ignore_errors=True)
+            cache_root = cache_dir()
+            if cache_root.exists():
+                shutil.rmtree(cache_root)
         except Exception:
             pass
+
+        # Legacy ps1 cache location (pre-migration); remove if present
+        legacy_ps1 = Path(os.path.expanduser("~")) / ".nuro" / "ps1"
+        shutil.rmtree(legacy_ps1, ignore_errors=True)
+
+        # Recreate directory structure required for subsequent operations
+        ensure_tree()
 
     # Build commands list depending on refresh policy
     lines: List[str] = []

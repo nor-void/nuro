@@ -24,7 +24,7 @@ USAGE DISPLAY
   - Command list: By default uses local cache only; if the cache is empty, fetches the list from GitHub. Use `--refresh` to force listing from GitHub.
   - Usage text: Cached in `~/.nuro/cache/usage/<bucket>/<name>.txt`. When available, it is used directly without executing PowerShell. If missing or when `--refresh` is specified, runs the PowerShell `NuroUsage_<name>` to refresh the cache.
   - Script cache: `.ps1` files are cached in `~/.nuro/cache/cmds/ps1/<bucket>/` and fetched on-demand only when missing, respecting `sha1-hash`.
-  - `--refresh` clears both caches (script and usage) before recreating them.
+  - `--refresh` first removes the entire `~/.nuro/cache` directory before caches are rebuilt.
 - PowerShell (`bootstrap/nuro.ps1`): Prints a simple list when called without args and honors `sha1-hash` for the official bucket when listing and executing commands.
 
 LOG FILES

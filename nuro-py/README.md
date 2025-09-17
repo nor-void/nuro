@@ -38,7 +38,7 @@ nuro keeps its state inside `~/.nuro` (created automatically on first run):
   }
   ```
   Add a `pins` object mapping command names to bucket names to force per-command resolution.
-- `cache/` – Script (`cmds/`) and usage (`usage/`) caches. These are cleared when `nuro --refresh` is invoked.
+- `cache/` – Script (`cmds/`) and usage (`usage/`) caches. Running `nuro --refresh` removes this directory before rebuilding entries.
 - `logs/` – Contains `nuro-debug.log` with detailed trace logs.
 
 ## Command Resolution
@@ -48,7 +48,7 @@ nuro keeps its state inside `~/.nuro` (created automatically on first run):
 4. nuro prefers `.ps1`, then `.py`, then `.sh`. PowerShell scripts are executed through a helper host so `NuroCmd_<name>` can interact with the current PowerShell session when desired.
 
 ## Diagnostics
-- `nuro --refresh` removes both script and usage caches before re-listing commands.
+- `nuro --refresh` removes the entire `~/.nuro/cache` tree before re-listing commands.
 - Validation commands can be run manually: `nuro official:your-cmd` fetches straight from the `official` bucket even if pins exist.
 
 ## Developing Buckets
