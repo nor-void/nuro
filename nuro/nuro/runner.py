@@ -86,6 +86,7 @@ def _try_fetch_any(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[
     exts = ["ps1", "py", "sh"]
     for b in _bucket_resolution_order(cmd, reg, bucket_hint):
         bname = str(b.get("name", ""))
+        debug(f"Trying bucket '{bname}' for cmd={cmd}")
         for ext in exts:
             if ext == "ps1":
                 dest = ps1_dir() / bname / f"{cmd}.ps1"
@@ -94,8 +95,10 @@ def _try_fetch_any(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[
             else:
                 dest = sh_dir() / bname / f"{cmd}.sh"
             if dest.exists():
+                debug(f"Fetch fallback found cached file: {dest}")
                 return dest, ext
             src = resolve_cmd_source_with_meta(b, cmd, ext=ext)
+            debug(f"Attempting fetch: bucket={bname} cmd={cmd} ext={ext} dest={dest} src={src}")
             if src.get("kind") == "local":
                 local_path = Path(src["path"])  # may be absolute
                 if local_path.exists():
@@ -103,17 +106,22 @@ def _try_fetch_any(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[
                     try:
                         data = local_path.read_bytes()
                         dest.write_bytes(data)
+                        debug(f"Copied local command from {local_path} -> {dest}")
                         return dest, ext
-                    except Exception:
+                    except Exception as copy_err:
+                        debug(f"Failed to copy local command from {local_path}: {copy_err}")
                         continue
             else:
                 try:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     fetch_to(dest, src["url"])
+                    debug(f"Fetched remote command for cmd={cmd} ext={ext} bucket={bname} -> {dest}")
                     return dest, ext
-                except Exception:
+                except Exception as fetch_err:
+                    debug(f"Fetch error bucket={bname} cmd={cmd} ext={ext}: {fetch_err}")
                     continue
     return None
+
 
 
 def run_command(name: str, args: List[str]) -> int:
@@ -128,6 +136,7 @@ def run_command(name: str, args: List[str]) -> int:
         paths = _local_paths_for_ext(cmd, bucket_hint, reg, ext)
         for p in paths:
             if p.exists():
+                debug(f"Using cached script: cmd={cmd} ext={ext} path={p}")
                 if help_requested:
                     if ext == "ps1":
                         return run_usage_for_ps1(p, cmd)
@@ -159,6 +168,7 @@ def run_command(name: str, args: List[str]) -> int:
     fetched = _try_fetch_any(cmd, reg, bucket_hint)
     if fetched:
         path, ext = fetched
+        debug(f"Using freshly fetched script: cmd={cmd} ext={ext} path={path}")
         if help_requested:
             if ext == "ps1":
                 return run_usage_for_ps1(path, cmd)
@@ -186,6 +196,7 @@ def run_command(name: str, args: List[str]) -> int:
             return subprocess.call([exe, "-c", code, *args])
         return subprocess.call(["bash", str(path), *args])
 
+    debug(f"Command '{cmd}' not found after checking all buckets (bucket_hint={bucket_hint})")
     raise RuntimeError(f"command '{cmd}' not found in any bucket")
 
 
