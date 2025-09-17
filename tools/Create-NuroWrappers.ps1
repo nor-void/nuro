@@ -1,33 +1,28 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-  limbo/*.ps1 を nuro規格（NuroUsage_*/NuroCmd_*）に自動整形して出力する。
+  limbo/*.ps1 を nuro 規格（NuroUsage_*/NuroCmd_*）へ自動整形して出力する。
 
 .DESCRIPTION
-  - ファイル先頭が script-level param の場合は「ファイル名」をコマンド名に採用。
-    例: port-open.ps1 → NuroUsage_PortOpen / NuroCmd_PortOpen を生成。
-    実行は原本 ps1 を "& <path> @args" で呼び出す（引数はそのまま透過）。
-  - ps1 内に function 定義が1つ以上ある場合は、関数ごとに別ファイルを生成。
-    各ラッパーは「元ps1を dot-source → その関数を @args で呼ぶ」。
-
-  出力される各ファイルは、nuroの“bucket.ps1方式”と同様に
-  NuroUsage_* / NuroCmd_* の2関数を含む。
+  - script-level param を持つファイルは NuroCmd_* 内にロジックを直接埋め込み、元ファイルを呼び出さない。
+  - ファイル内のトップレベル関数は、その本体を NuroCmd_* に移植して limbo/*.ps1 への依存を排除する。
+  - 生成物は NuroUsage_* / NuroCmd_* の二関数を含む単一 ps1 として出力される。
 
 .EXAMPLE
-  .\tools\Create-NuroWrappers.ps1 -SourceDir .\limbo -OutDir .\nuro\bucket
+  .\tools\Create-NuroWrappers.ps1 -SourceDir .\limbo -OutDir .\cmds_staging
 
 .NOTES
-  - UsageはASTから param 名等を拾って“最低限”の自動生成を行う（あとで手修正OK）。
-  - コマンド名は PascalCase（英数字）化して Nuro規格の接頭辞を付与する。
+  - Usage テキストは AST から param 名を拾って最低限の案内文を自動生成する（必要に応じて手修正してください）。
+  - コマンド名は PascalCase（英数字）化して Nuro 規格の接頭辞を付与する。
 #>
 
 [CmdletBinding()]
 param(
   [Parameter()]
-  [string]$SourceDir = './limbo',     # 既定はカレント配下の limbo
+  [string]$SourceDir = './limbo',
 
   [Parameter()]
-  [string]$OutDir = './cmd_staging'   # 既定はカレント配下の cmd_staging
+  [string]$OutDir = './cmds_staging'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,7 +30,6 @@ Add-Type -AssemblyName 'System.Management.Automation'
 
 function Resolve-Pascal {
   param([string]$Name)
-  # 英数字以外でスプリット → 先頭大文字化 → 連結。先頭が数字なら Prefix を付ける
   $parts = ($Name -split '[^A-Za-z0-9]+') | Where-Object { $_ -ne '' }
   if (-not $parts) { return 'Cmd' }
   $joined = ($parts | ForEach-Object { $_.Substring(0,1).ToUpper() + $_.Substring(1) }) -join ''
@@ -49,21 +43,10 @@ function Get-Ast {
   return [System.Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$errors), $errors
 }
 
-function Get-RootParamBlock {
-  param($Ast)
-  # スクリプト直下の ParamBlockAst を拾う（先頭param(...)の判定）
-  return $Ast.ParamBlock
-}
-
-function Get-Functions {
-  param($Ast)
-  return $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
-}
-
 function Build-UsageText {
   param(
-    [string]$DisplayName,     # human表示名（例: port-open or 関数名）
-    [System.Collections.IEnumerable]$Params # ParameterAst列
+    [string]$DisplayName,
+    [System.Collections.IEnumerable]$Params
   )
   $paramList =
     if ($Params -and $Params.Count -gt 0) {
@@ -86,12 +69,117 @@ Notes:
 "@
 }
 
-# 出力準備
+function Render-ParamBlockLines {
+  param([System.Collections.IEnumerable]$Params)
+  $paramArray = @($Params)
+  if (-not $paramArray -or $paramArray.Count -eq 0) { return @() }
+
+  $lines = [System.Collections.Generic.List[string]]::new()
+  $lines.Add('param(')
+
+  foreach ($param in $paramArray) {
+    $textLines = $param.Extent.Text -split "`r?`n"
+    foreach ($line in $textLines) {
+      $lines.Add(('    ' + $line.TrimEnd()))
+    }
+  }
+
+  $lines.Add(')')
+  return $lines.ToArray()
+}
+
+function Trim-BlankLines {
+  param([string[]]$Lines)
+  if (-not $Lines) { return @() }
+
+  $start = 0
+  while ($start -lt $Lines.Length -and [string]::IsNullOrWhiteSpace($Lines[$start])) { $start++ }
+
+  $end = $Lines.Length - 1
+  while ($end -ge $start -and [string]::IsNullOrWhiteSpace($Lines[$end])) { $end-- }
+
+  if ($end -lt $start) { return @() }
+
+  return $Lines[$start..$end]
+}
+
+function Indent-Lines {
+  param(
+    [string[]]$Lines,
+    [string]$Indent = '  '
+  )
+
+  if (-not $Lines) { return @() }
+
+  return $Lines | ForEach-Object {
+    if ([string]::IsNullOrWhiteSpace($_)) {
+      ''
+    } else {
+      $Indent + $_
+    }
+  }
+}
+
+function Get-TopLevelFunctions {
+  param($Ast)
+  if (-not $Ast.EndBlock) { return @() }
+  return $Ast.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.FunctionDefinitionAst] }
+}
+
+function Write-CommandFile {
+  param(
+    [string]$CmdName,
+    [string]$DisplayName,
+    [string]$WrapperFileName,
+    [string[]]$CmdBodyLines,
+    [System.Collections.IEnumerable]$UsageParams,
+    [string]$SourcePath
+  )
+
+  $usageFn = "NuroUsage_$CmdName"
+  $cmdFn   = "NuroCmd_$CmdName"
+  $usage   = Build-UsageText -DisplayName $DisplayName -Params $UsageParams
+
+  $usageLines = [System.Collections.Generic.List[string]]::new()
+  $usageLines.AddRange($usage -split "`r?`n")
+  while ($usageLines.Count -gt 0 -and [string]::IsNullOrEmpty($usageLines[$usageLines.Count - 1])) {
+    $usageLines.RemoveAt($usageLines.Count - 1)
+  }
+
+  $builder = [System.Text.StringBuilder]::new()
+  [void]$builder.AppendLine('# Auto-generated nuro command (inline original content)')
+  [void]$builder.AppendLine("# Source: $SourcePath")
+  [void]$builder.AppendLine('')
+
+  [void]$builder.AppendLine("function $usageFn {")
+  [void]$builder.AppendLine('  @"')
+  foreach ($line in $usageLines) {
+    [void]$builder.AppendLine($line)
+  }
+  [void]$builder.AppendLine('  "@')
+  [void]$builder.AppendLine('}')
+  [void]$builder.AppendLine('')
+
+  [void]$builder.AppendLine("function $cmdFn {")
+  foreach ($line in (Indent-Lines -Lines $CmdBodyLines -Indent '  ')) {
+    [void]$builder.AppendLine($line)
+  }
+  [void]$builder.AppendLine('}')
+
+  $content = $builder.ToString().TrimEnd("`r", "`n") + "`r`n"
+  $outPath = Join-Path $OutDir $WrapperFileName
+  Set-Content -LiteralPath $outPath -Encoding UTF8 $content
+  Write-Host "Generated: $outPath" -ForegroundColor Green
+}
+
 $src = Resolve-Path $SourceDir
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 $files = Get-ChildItem -LiteralPath $src -Filter '*.ps1' -File -Recurse
-if (-not $files) { Write-Warning "No .ps1 under $src"; return }
+if (-not $files) {
+  Write-Warning "No .ps1 under $src"
+  return
+}
 
 foreach ($file in $files) {
   $text = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
@@ -102,75 +190,34 @@ foreach ($file in $files) {
     Write-Warning "Parse warning(s) in $($file.Name): $($errs | ForEach-Object Message -join '; ')"
   }
 
-  $rootParam = Get-RootParamBlock -Ast $ast
-  $fnAsts    = Get-Functions -Ast $ast
+  $rootParam = $ast.ParamBlock
+  $fnAsts    = @(Get-TopLevelFunctions -Ast $ast)
 
-  $relPathFromOutToSrc = Resolve-Path $file.DirectoryName
-  # 生成ファイル名の一意化ヘルパ
-  function Write-Wrapper {
-    param(
-      [string]$CmdName,                 # Pascal化後（例: PortOpen / ShowAdminTools など）
-      [string]$DisplayName,             # Usageの1行目に出す呼び名（例: port-open / Show-AdminTools）
-      [string]$WrapperFileName,         # 出力ps1のファイル名
-      [string]$InvokeBlock,             # NuroCmd_* 内の実体呼び出し本文
-      [System.Collections.IEnumerable]$ParamAsts  # Usage生成用
-    )
+  if ($rootParam -and $fnAsts.Count -eq 0) {
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
+    $cmdName  = Resolve-Pascal $baseName
+    $wrapper  = "$cmdName.ps1"
 
-    $usageFn = "NuroUsage_$CmdName"
-    $cmdFn   = "NuroCmd_$CmdName"
-    $usage   = Build-UsageText -DisplayName $DisplayName -Params $ParamAsts
+    $bodyStart = $rootParam.Extent.EndOffset
+    $bodyText = if ($bodyStart -lt $text.Length) { $text.Substring($bodyStart) } else { '' }
+    $bodyLines = Trim-BlankLines -Lines ($bodyText -split "`r?`n")
 
-    $builder = [System.Text.StringBuilder]::new()
-    [void]$builder.AppendLine('# Auto-generated wrapper for nuro (do not edit manually)')
-    [void]$builder.AppendLine("# Source: $($file.FullName)")
-    [void]$builder.AppendLine('')
-    [void]$builder.AppendLine("function $usageFn {")
-    [void]$builder.AppendLine('@"')
-    $usageLines = [System.Collections.Generic.List[string]]::new()
-    $usageLines.AddRange($usage -split "`r?`n")
-    while ($usageLines.Count -gt 0 -and [string]::IsNullOrEmpty($usageLines[$usageLines.Count - 1])) {
-      $usageLines.RemoveAt($usageLines.Count - 1)
+    $cmdLines = [System.Collections.Generic.List[string]]::new()
+    $cmdLines.Add('[CmdletBinding()]')
+
+    $paramLines = Render-ParamBlockLines -Params $rootParam.Parameters
+    if ($paramLines.Count -gt 0) {
+      foreach ($line in $paramLines) { $cmdLines.Add($line) }
+    } else {
+      $cmdLines.Add('param()')
     }
-    foreach ($line in $usageLines) {
-      [void]$builder.AppendLine($line)
-    }
-    [void]$builder.AppendLine('"@')
-    [void]$builder.AppendLine('}')
-    [void]$builder.AppendLine('')
-    [void]$builder.AppendLine("function $cmdFn {")
-    [void]$builder.AppendLine('    param([string[]]`$args)')
-    [void]$builder.AppendLine('    try {')
-    $invokeLines = [System.Collections.Generic.List[string]]::new()
-    $invokeLines.AddRange($InvokeBlock -split "`r?`n")
-    while ($invokeLines.Count -gt 0 -and [string]::IsNullOrEmpty($invokeLines[$invokeLines.Count - 1])) {
-      $invokeLines.RemoveAt($invokeLines.Count - 1)
-    }
-    foreach ($line in $invokeLines) {
-      [void]$builder.AppendLine($line)
-    }
-    [void]$builder.AppendLine('    } catch {')
-    [void]$builder.AppendLine('        Write-Error "`$($cmdFn): $($file.Name): $($_.Exception.Message)"')
-    [void]$builder.AppendLine('        throw')
-    [void]$builder.AppendLine('    }')
-    [void]$builder.AppendLine('}')
 
-    $content = $builder.ToString().TrimEnd("`r", "`n")
-    $outPath = Join-Path $OutDir $WrapperFileName
-    $content | Set-Content -LiteralPath $outPath -Encoding UTF8 -NoNewline
-    Write-Host "Generated: $outPath" -ForegroundColor Green
-  }
+    if ($bodyLines.Count -gt 0) {
+      $cmdLines.Add('')
+      foreach ($line in $bodyLines) { $cmdLines.Add($line) }
+    }
 
-  if ($rootParam) {
-    # スクリプト型：ファイル名＝コマンド名
-    $baseName   = [System.IO.Path]::GetFileNameWithoutExtension($file.Name)
-    $cmdName    = Resolve-Pascal $baseName
-    $wrapper    = "$cmdName.ps1"
-    $display    = $baseName  # Usage表示は元のファイル名派
-    $invoke     = @"
-        # script passthrough: invoke the original ps1 with user args
-        & "$($file.FullName)" @args
-"@
-    Write-Wrapper -CmdName $cmdName -DisplayName $display -WrapperFileName $wrapper -InvokeBlock $invoke -ParamAsts $rootParam.Parameters
+    Write-CommandFile -CmdName $cmdName -DisplayName $baseName -WrapperFileName $wrapper -CmdBodyLines $cmdLines.ToArray() -UsageParams $rootParam.Parameters -SourcePath $file.FullName
   }
 
   if ($fnAsts.Count -gt 0) {
@@ -178,21 +225,43 @@ foreach ($file in $files) {
       $origFnName = $fn.Name
       $cmdName    = Resolve-Pascal $origFnName
       $wrapper    = "$cmdName.ps1"
-      $display    = $origFnName   # Usage表示は元の関数名派
-      $invoke     = @"
-        # function passthrough: dot-source original then invoke the function
-        . "$($file.FullName)"
-        & $origFnName @args
-"@
-      Write-Wrapper -CmdName $cmdName -DisplayName $display -WrapperFileName $wrapper -InvokeBlock $invoke -ParamAsts $fn.Parameters
+
+      $paramAsts = @()
+      if ($fn.Parameters -and $fn.Parameters.Count -gt 0) {
+        $paramAsts = $fn.Parameters
+      } elseif ($fn.Body.ParamBlock) {
+        $paramAsts = $fn.Body.ParamBlock.Parameters
+      }
+
+      $bodyStart = $fn.Body.Extent.StartOffset
+      $bodyEnd   = $fn.Body.Extent.EndOffset
+      $bodyText  = $text.Substring($bodyStart, $bodyEnd - $bodyStart)
+
+      if ($bodyText.StartsWith('{')) { $bodyText = $bodyText.Substring(1) }
+      if ($bodyText.EndsWith('}')) { $bodyText = $bodyText.Substring(0, $bodyText.Length - 1) }
+
+      $bodyLines = Trim-BlankLines -Lines ($bodyText -split "`r?`n")
+
+      $cmdLines = [System.Collections.Generic.List[string]]::new()
+
+      if ($fn.Body.ParamBlock) {
+        foreach ($line in $bodyLines) { $cmdLines.Add($line) }
+      } else {
+        if ($paramAsts.Count -gt 0) {
+          $cmdLines.Add('[CmdletBinding()]')
+          foreach ($line in (Render-ParamBlockLines -Params $paramAsts)) { $cmdLines.Add($line) }
+          if ($bodyLines.Count -gt 0) { $cmdLines.Add('') }
+        }
+        foreach ($line in $bodyLines) { $cmdLines.Add($line) }
+      }
+
+      Write-CommandFile -CmdName $cmdName -DisplayName $origFnName -WrapperFileName $wrapper -CmdBodyLines $cmdLines.ToArray() -UsageParams $paramAsts -SourcePath $file.FullName
     }
   }
 
-  # どちらにも該当しない（paramもfunctionも無い）ps1はスキップ（通知のみ）
   if (-not $rootParam -and $fnAsts.Count -eq 0) {
-    Write-Warning "No root param or functions found in $($file.Name); skipped."
+    Write-Warning "No root param or top-level functions found in $($file.Name); skipped."
   }
 }
 
-Write-Host "Done. Put generated wrappers under: $OutDir" -ForegroundColor Cyan
-
+Write-Host "Done. Generated wrappers under: $OutDir" -ForegroundColor Cyan
