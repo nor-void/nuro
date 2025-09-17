@@ -1,13 +1,7 @@
 # Auto-generated nuro command (inline original content)
 
 function NuroUsage_ShowAdminTools {
-  @"
-Usage:
-  Show-AdminTools [-ListOnly]
-
-Notes:
-  - 引数はそのまま透過されます（@args）。
-  "@
+  'nuro Show-AdminTools [-ListOnly]'
 }
 
 function NuroCmd_ShowAdminTools {

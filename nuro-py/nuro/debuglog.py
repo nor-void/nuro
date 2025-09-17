@@ -30,12 +30,8 @@ def is_debug_enabled() -> bool:
 
 
 def debug(message: str) -> None:
-    """Write a debug line to console and to ~/.nuro/logs/nuro-debug.log if enabled.
+    """Write a debug line to ~/.nuro/logs regardless of flag; echo to console when enabled."""
 
-    When disabled, this function is a no-op.
-    """
-    if not is_debug_enabled():
-        return
     ensure_tree()
     ts = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {message}"
@@ -47,4 +43,6 @@ def debug(message: str) -> None:
     except Exception:
         # Swallow logging errors silently
         pass
-    print(f"[DEBUG] {message}")
+
+    if is_debug_enabled():
+        print(f"[DEBUG] {message}")

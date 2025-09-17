@@ -6,7 +6,7 @@ import urllib.request
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
-from .paths import ps1_dir, cache_dir, cmds_cache_base
+from .paths import ps1_dir, cache_dir
 from .debuglog import debug
 from . import __version__
 from .registry import load_registry
@@ -89,21 +89,22 @@ def print_root_usage(refresh: bool = False) -> None:
     print("  nuro <command> [args...]")
     print("  nuro <command> -h|--help|/?\n")
     print("GLOBAL OPTIONS:")
-    print("  --debug | -d       Enable debug logging")
-    print("  --no-debug         Disable debug logging")
     print("  --refresh          Refresh command list from GitHub when no args\n")
     # Optional full refresh: clear ps1 and usage caches first
     if refresh:
         try:
-            # Clear all script caches under cache/cmds (ps1/py/sh)
-            shutil.rmtree(cmds_cache_base(), ignore_errors=True)
-            # Legacy ps1 cache location (pre-migration); remove if present
-            legacy_ps1 = Path(os.path.expanduser("~")) / ".nuro" / "ps1"
-            shutil.rmtree(legacy_ps1, ignore_errors=True)
-            # Usage text cache
-            shutil.rmtree(cache_dir() / "usage", ignore_errors=True)
+            cache_root = cache_dir()
+            if cache_root.exists():
+                shutil.rmtree(cache_root)
         except Exception:
             pass
+
+        # Legacy ps1 cache location (pre-migration); remove if present
+        legacy_ps1 = Path(os.path.expanduser("~")) / ".nuro" / "ps1"
+        shutil.rmtree(legacy_ps1, ignore_errors=True)
+
+        # Recreate directory structure required for subsequent operations
+        ensure_tree()
 
     # Build commands list depending on refresh policy
     lines: List[str] = []
@@ -138,7 +139,7 @@ def print_root_usage(refresh: bool = False) -> None:
             return s + (" " * (width - cur))
 
         headers = ["コマンド", "種別", "使用例"]
-        # Try to enrich with one-line help by invoking NuroUsage_* using cache under ~/.nuro/ps1/official
+        # Try to enrich with one-line help by invoking NuroUsage_* using cache under ~/.nuro/cache/cmds/official
         bucket_name = "official"
         ensure_tree()
         ps1_cache_dir = ps1_dir() / bucket_name
@@ -168,7 +169,7 @@ def print_root_usage(refresh: bool = False) -> None:
                     cached_text = ufile.read_text(encoding="utf-8", errors="replace")
                 if cached_text is None:
                     # Ensure ps1 cached, then capture usage and update cache
-                    # Note: ps1 cache lives under ~/.nuro/ps1/official
+                    # Note: ps1 cache lives under ~/.nuro/cache/cmds/official
                     t = (ps1_cache_dir / f"{n}.ps1")
                     if not t.exists():
                         src = resolve_cmd_source_with_meta(official_bucket, n)

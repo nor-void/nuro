@@ -13,3 +13,4 @@ handover.md
 publish.sh
 nuro.egg-info
 cmds_staging
+python_unittest_guidelines.md
