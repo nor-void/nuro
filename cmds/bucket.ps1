@@ -15,7 +15,7 @@ function NuroCmd_bucket {
   $NURO_CONFIG = Join-Path $NURO_HOME "config"
   $APP_CONFIG  = Join-Path $NURO_CONFIG "config.json"
   function Ensure-NuroDirs { if (-not (Test-Path $NURO_CONFIG)) { New-Item -ItemType Directory -Path $NURO_CONFIG | Out-Null } }
-  function Get-DefaultAppConfig { [pscustomobject]@{ official_bucket_base = 'https://raw.githubusercontent.com/nor-void/nuro' } }
+function Get-DefaultAppConfig { [pscustomobject]@{ official_bucket_base = 'https://raw.githubusercontent.com/nor-void/nuro/main' } }
   function Load-NuroAppConfig {
     Ensure-NuroDirs
     if (-not (Test-Path $APP_CONFIG)) { $def = Get-DefaultAppConfig; ($def | ConvertTo-Json -Depth 4) | Set-Content -Encoding UTF8 $APP_CONFIG; return $def }

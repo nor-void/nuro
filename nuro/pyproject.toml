@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "nuro"
 dynamic = ["version"]
-description = "nuro placeholder"
+description = "nuro is a lightweight runner for fetching and executing PowerShell scripts from remote repositories."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "nuro" }]

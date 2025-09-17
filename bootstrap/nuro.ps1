@@ -46,7 +46,7 @@ function Ensure-NuroDirs {
 
 function Get-DefaultAppConfig {
   # Default official bucket base (commands under "cmds/")
-  [pscustomobject]@{ official_bucket_base = 'https://raw.githubusercontent.com/nor-void/nuro' }
+  [pscustomobject]@{ official_bucket_base = 'https://raw.githubusercontent.com/nor-void/nuro/main' }
 }
 
 function Load-NuroAppConfig {

@@ -1,2 +1,0 @@
-[console_scripts]
-nuro = nuro.cli:main
