@@ -84,7 +84,7 @@ def _list_remote_commands() -> List[str]:
 
 
 def print_root_usage(refresh: bool = False) -> None:
-    print(f"nuro v{__version__} — minimal runner\n")
+    print(f"nuro v{__version__} — minimal runner(Py-CLI)\n")
     print("USAGE:")
     print("  nuro <command> [args...]")
     print("  nuro <command> -h|--help|/?\n")

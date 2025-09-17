@@ -54,6 +54,7 @@ def _normalize_raw_base(base: str) -> str:
 
     parts = [p for p in parsed.path.split("/") if p]
     if len(parts) == 2:
+        debug(f"raw base missing ref; injecting 'main' into {trimmed}")
         parts.append("main")
         new_path = "/" + "/".join(parts)
         parsed = parsed._replace(path=new_path)
@@ -77,9 +78,11 @@ def resolve_cmd_source(bucket_uri: str, cmd: str) -> Dict[str, str]:
             url = f"{base}/cmds/{cmd}.ps1?cb={uuid4()}"
         else:
             url = f"{base}/cmds/{cmd}.ps1?cb={uuid4()}"
+        debug(f"Resolved remote source: base={base} cmd={cmd} ext=ps1 uri={bucket_uri} -> {url}")
         return {"kind": "remote", "url": url}
     else:
         path = str((Path(p.base) / "cmds" / f"{cmd}.ps1").resolve())
+        debug(f"Resolved local source: base={p.base} cmd={cmd} ext=ps1 path={path}")
         return {"kind": "local", "path": path}
 
 
@@ -97,20 +100,22 @@ def resolve_cmd_source_with_meta(bucket: Dict[str, object], cmd: str, ext: str =
         ref_or_sha = sha if sha else (p.ref or "main")
         base = f"https://raw.githubusercontent.com/{p.owner}/{p.repo}/{ref_or_sha}".rstrip("/")
         url = f"{base}/cmds/{cmd}.{ext}?cb={uuid4()}"
+        debug(f"Resolved github source: bucket={bucket.get('name')} cmd={cmd} ext={ext} ref={ref_or_sha} -> {url}")
         return {"kind": "remote", "url": url}
     if p.type == "raw":
         base = _normalize_raw_base(p.base)
         url = f"{base}/cmds/{cmd}.{ext}?cb={uuid4()}"
+        debug(f"Resolved raw source: bucket={bucket.get('name')} cmd={cmd} ext={ext} base={base} -> {url}")
         return {"kind": "remote", "url": url}
     # local
     path = str((Path(p.base) / "cmds" / f"{cmd}.{ext}").resolve())
+    debug(f"Resolved local source: bucket={bucket.get('name')} cmd={cmd} ext={ext} -> {path}")
     return {"kind": "local", "path": path}
 
 
 def fetch_to(path: Path, url: str, timeout: int = 60) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if "github" in url:
-        debug(f"Fetching from URL: {url}")
+    debug(f"Fetching from URL: {url}")
     req = urllib.request.Request(url, headers={"Cache-Control": "no-cache", "Pragma": "no-cache", "User-Agent": "nuro"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = resp.read()
