@@ -77,10 +77,28 @@ function Render-ParamBlockLines {
   $lines = [System.Collections.Generic.List[string]]::new()
   $lines.Add('param(')
 
-  foreach ($param in $paramArray) {
+  for ($i = 0; $i -lt $paramArray.Count; $i++) {
+    $param = $paramArray[$i]
     $textLines = $param.Extent.Text -split "`r?`n"
+    $trimmed = @()
     foreach ($line in $textLines) {
-      $lines.Add(('    ' + $line.TrimEnd()))
+      $trimmed += $line.TrimEnd()
+    }
+
+    $lastIdx = $trimmed.Length - 1
+    while ($lastIdx -ge 0 -and [string]::IsNullOrWhiteSpace($trimmed[$lastIdx])) {
+      $lastIdx--
+    }
+
+    if ($lastIdx -ge 0 -and $i -lt $paramArray.Count - 1) {
+      $needsComma = -not $trimmed[$lastIdx].TrimEnd().EndsWith(',')
+      if ($needsComma) {
+        $trimmed[$lastIdx] = $trimmed[$lastIdx] + ','
+      }
+    }
+
+    foreach ($line in $trimmed) {
+      $lines.Add(('    ' + $line))
     }
   }
 

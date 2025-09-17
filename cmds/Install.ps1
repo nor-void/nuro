@@ -8,7 +8,7 @@ function NuroCmd_Install {
   [CmdletBinding()]
   param(
       [Parameter(Mandatory=$true)]
-          [string]$Package
+          [string]$Package,
       [string]$Version
   )
 
