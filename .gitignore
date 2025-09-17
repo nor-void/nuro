@@ -8,7 +8,6 @@ codex.*
 __pycache__/
 /cmds_deprecated
 .nor*
-!.nor.update.ps1
 temporary.md
 handover.md
 publish.sh
