@@ -10,3 +10,4 @@ __pycache__/
 .nor*
 temporary.md
 handover.md
+publish.sh
