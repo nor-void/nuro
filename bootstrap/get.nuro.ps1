@@ -300,8 +300,13 @@ function Ensure-Shim {
   $lines = @(
     '@echo off',
     'setlocal',
-    'set "_PY=%USERPROFILE%\\.nuro\\venv\\Scripts\\python.exe"',
-    '"%_PY%" -m nuro %*',
+    'set "_NURO_EXE=%USERPROFILE%\\.nuro\\venv\\Scripts\\nuro.exe"',
+    'if exist "%_NURO_EXE%" (',
+    '  "%_NURO_EXE%" %*',
+    ') else (',
+    '  set "_PY=%USERPROFILE%\\.nuro\\venv\\Scripts\\python.exe"',
+    '  "%_PY%" -m nuro %*',
+    ')',
     'exit /b %ERRORLEVEL%'
   )
   $content = ($lines -join "`r`n")
