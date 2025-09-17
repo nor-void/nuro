@@ -5,7 +5,9 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Tuple
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
+
 from .debuglog import debug
 
 
@@ -38,6 +40,27 @@ def parse_bucket_uri(uri: str) -> BucketSpec:
     return BucketSpec("local", uri)
 
 
+def _normalize_raw_base(base: str) -> str:
+    """Ensure raw.githubusercontent.com bases include a ref segment."""
+
+    trimmed = base.rstrip("/")
+    try:
+        parsed = urlparse(trimmed)
+    except Exception:
+        return trimmed
+
+    if parsed.netloc.lower() != "raw.githubusercontent.com":
+        return trimmed
+
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) == 2:
+        parts.append("main")
+        new_path = "/" + "/".join(parts)
+        parsed = parsed._replace(path=new_path)
+        trimmed = urlunparse(parsed).rstrip("/")
+    return trimmed
+
+
 def resolve_cmd_source(bucket_uri: str, cmd: str) -> Dict[str, str]:
     """Resolve a command source from a bucket URI without extra metadata.
 
@@ -47,6 +70,8 @@ def resolve_cmd_source(bucket_uri: str, cmd: str) -> Dict[str, str]:
     p = parse_bucket_uri(bucket_uri)
     if p.type in ("github", "raw"):
         base = p.base.rstrip("/")
+        if p.type == "raw":
+            base = _normalize_raw_base(base)
         # For github, p.base points to repo/ref root; commands live under cmds/
         if p.type == "github":
             url = f"{base}/cmds/{cmd}.ps1?cb={uuid4()}"
@@ -74,7 +99,7 @@ def resolve_cmd_source_with_meta(bucket: Dict[str, object], cmd: str, ext: str =
         url = f"{base}/cmds/{cmd}.{ext}?cb={uuid4()}"
         return {"kind": "remote", "url": url}
     if p.type == "raw":
-        base = p.base.rstrip("/")
+        base = _normalize_raw_base(p.base)
         url = f"{base}/cmds/{cmd}.{ext}?cb={uuid4()}"
         return {"kind": "remote", "url": url}
     # local

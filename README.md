@@ -3,11 +3,11 @@ nuro is a minimal, scoop-like runner for distributing PowerShell scripts. Fetch 
 
 CONFIGURATION
 - App config: `~/.nuro/config/config.json`
-  - `official_bucket_base` (string): Base URL for the official bucket. Default `https://raw.githubusercontent.com/nor-void/nuro`.
+  - `official_bucket_base` (string): Base URL for the official bucket. Default `https://raw.githubusercontent.com/nor-void/nuro/main`.
   - Created automatically on first run if missing.
 - Registry: `~/.nuro/config/buckets.json`
   - `buckets`: Array of bucket objects. Example:
-    - `{ "name": "official", "uri": "raw::https://raw.githubusercontent.com/nor-void/nuro", "priority": 100, "trusted": true }`
+    - `{ "name": "official", "uri": "raw::https://raw.githubusercontent.com/nor-void/nuro/main", "priority": 100, "trusted": true }`
     - Optional: add `"sha1-hash": "<commit-sha>"` to pin the bucket to a specific commit.
   - `pins`: Object mapping `command` to `bucketName` to force which bucket to use per command.
   - File is created automatically if missing and normalized on updates.

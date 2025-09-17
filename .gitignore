@@ -5,7 +5,10 @@ AGENT.md
 logs/
 nuro/dist/
 codex.*
-temporary.md
 __pycache__/
 /cmds_deprecated
 .nor*
+temporary.md
+handover.md
+publish.sh
+nuro.egg-info
