@@ -1,13 +1,7 @@
 # Auto-generated nuro command (inline original content)
 
 function NuroUsage_Pgres2d {
-  @"
-Usage:
-  pgres2d <Arg1>
-
-Notes:
-  - 引数はそのまま透過されます（@args）。
-  "@
+  'nuro pgres2d <Arg1>'
 }
 
 function NuroCmd_Pgres2d {

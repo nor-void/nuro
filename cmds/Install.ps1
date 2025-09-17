@@ -1,13 +1,7 @@
 # Auto-generated nuro command (inline original content)
 
 function NuroUsage_Install {
-  @"
-Usage:
-  install <Package> <Version>
-
-Notes:
-  - 引数はそのまま透過されます（@args）。
-  "@
+  'nuro install <Package> [<Version>]'
 }
 
 function NuroCmd_Install {

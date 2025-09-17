@@ -1,13 +1,7 @@
 # Auto-generated nuro command (inline original content)
 
 function NuroUsage_PortOpen {
-  @"
-Usage:
-  port-open <PortNo>
-
-Notes:
-  - 引数はそのまま透過されます（@args）。
-  "@
+  'nuro port-open <PortNo>'
 }
 
 function NuroCmd_PortOpen {
