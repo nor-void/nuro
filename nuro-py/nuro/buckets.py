@@ -120,7 +120,7 @@ def _list_github_cmds(owner: str, repo: str, ref: str) -> List[Dict[str, Any]]:
     return data
 
 
-def _github_download_url(owner: str, repo: str, ref: str, filename: str) -> Optional[str]:
+def _find_github_item(owner: str, repo: str, ref: str, filename: str) -> Optional[Dict[str, Any]]:
     try:
         listing = _list_github_cmds(owner, repo, ref)
     except Exception as exc:
@@ -129,15 +129,34 @@ def _github_download_url(owner: str, repo: str, ref: str, filename: str) -> Opti
     for item in listing:
         if not isinstance(item, dict):
             continue
-        if item.get("name") != filename:
+        name = str(item.get("name") or "")
+        if name.lower() != filename.lower():
             continue
-        url = item.get("download_url")
-        if url:
-            debug(
-                f"Resolved GitHub download_url: owner={owner} repo={repo} ref={ref} file={filename} url={url}"
-            )
-            return url
-    debug(f"File {filename} not found in GitHub contents for {owner}/{repo}@{ref}")
+        return item
+    return None
+
+
+def _github_download_url(owner: str, repo: str, ref: str, filename: str) -> Optional[str]:
+    item = _find_github_item(owner, repo, ref, filename)
+    if not item:
+        debug(f"File {filename} not found in GitHub contents for {owner}/{repo}@{ref}")
+        return None
+    url = item.get("download_url")
+    if url:
+        debug(
+            f"Resolved GitHub download_url: owner={owner} repo={repo} ref={ref} file={item.get('name')} url={url}"
+        )
+        return url
+    path = str(item.get("path") or "").strip()
+    if path:
+        inferred = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}"
+        debug(
+            f"Inferred raw URL from contents listing: owner={owner} repo={repo} ref={ref} path={path} url={inferred}"
+        )
+        return inferred
+    debug(
+        f"GitHub contents item missing download_url/path: owner={owner} repo={repo} ref={ref} file={item.get('name')}"
+    )
     return None
 
 
