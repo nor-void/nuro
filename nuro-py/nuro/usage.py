@@ -139,7 +139,7 @@ def print_root_usage(refresh: bool = False) -> None:
             return s + (" " * (width - cur))
 
         headers = ["コマンド", "種別", "使用例"]
-        # Try to enrich with one-line help by invoking NuroUsage_* using cache under ~/.nuro/ps1/official
+        # Try to enrich with one-line help by invoking NuroUsage_* using cache under ~/.nuro/cache/cmds/official
         bucket_name = "official"
         ensure_tree()
         ps1_cache_dir = ps1_dir() / bucket_name
@@ -169,7 +169,7 @@ def print_root_usage(refresh: bool = False) -> None:
                     cached_text = ufile.read_text(encoding="utf-8", errors="replace")
                 if cached_text is None:
                     # Ensure ps1 cached, then capture usage and update cache
-                    # Note: ps1 cache lives under ~/.nuro/ps1/official
+                    # Note: ps1 cache lives under ~/.nuro/cache/cmds/official
                     t = (ps1_cache_dir / f"{n}.ps1")
                     if not t.exists():
                         src = resolve_cmd_source_with_meta(official_bucket, n)

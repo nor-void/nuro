@@ -13,9 +13,17 @@ def nuro_home() -> Path:
     return home_dir() / ".nuro"
 
 
+def cache_dir() -> Path:
+    return nuro_home() / "cache"
+
+
+def cmds_cache_base() -> Path:
+    return cache_dir() / "cmds"
+
+
 def ps1_dir() -> Path:
-    # Script cache location moved under cache/cmds/ps1
-    return nuro_home() / "cache" / "cmds" / "ps1"
+    """Legacy alias for the unified command cache directory."""
+    return cmds_cache_base()
 
 
 def locale_dir() -> Path:
@@ -24,12 +32,6 @@ def locale_dir() -> Path:
 
 def logs_dir() -> Path:
     return nuro_home() / "logs"
-
-def cache_dir() -> Path:
-    return nuro_home() / "cache"
-
-def cmds_cache_base() -> Path:
-    return cache_dir() / "cmds"
 
 
 def config_dir() -> Path:
@@ -46,15 +48,17 @@ def ensure_dir(p: Path) -> None:
 
 def ensure_tree() -> None:
     ensure_dir(nuro_home())
-    ensure_dir(ps1_dir())
+    ensure_dir(cmds_cache_base())
     # also ensure sibling caches for other kinds when needed
     ensure_dir(locale_dir())
     ensure_dir(logs_dir())
     ensure_dir(config_dir())
     ensure_dir(cache_dir())
 
+
 def py_dir() -> Path:
-    return cmds_cache_base() / "py"
+    return cmds_cache_base()
+
 
 def sh_dir() -> Path:
-    return cmds_cache_base() / "sh"
+    return cmds_cache_base()

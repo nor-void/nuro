@@ -11,7 +11,7 @@ import re
 from importlib import metadata as _im
 import json
 from .debuglog import debug
-from .paths import ensure_tree, ps1_dir, py_dir, sh_dir, cmds_cache_base, cache_dir
+from .paths import ensure_tree, cmds_cache_base, cache_dir
 from .registry import load_registry
 from .buckets import resolve_cmd_source_with_meta, fetch_to
 from .pshost import run_ps_file, run_usage_for_ps1, run_cmd_for_ps1
@@ -31,12 +31,7 @@ def _split_bucket_hint(name: str) -> Tuple[Optional[str], str]:
 
 def _local_paths_for_ext(cmd: str, bucket_hint: Optional[str], reg: Dict, ext: str) -> List[Path]:
     paths: List[Path] = []
-    if ext == "ps1":
-        base = ps1_dir()
-    elif ext == "py":
-        base = py_dir()
-    else:
-        base = sh_dir()
+    base = cmds_cache_base()
     # flat legacy path (not used for new cache structure but keep for completeness)
     paths.append(base / f"{cmd}.{ext}")
     # pinned bucket preferred
@@ -88,12 +83,7 @@ def _try_fetch_any(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[
         bname = str(b.get("name", ""))
         debug(f"Trying bucket '{bname}' for cmd={cmd}")
         for ext in exts:
-            if ext == "ps1":
-                dest = ps1_dir() / bname / f"{cmd}.ps1"
-            elif ext == "py":
-                dest = py_dir() / bname / f"{cmd}.py"
-            else:
-                dest = sh_dir() / bname / f"{cmd}.sh"
+            dest = cmds_cache_base() / bname / f"{cmd}.{ext}"
             if dest.exists():
                 debug(f"Fetch fallback found cached file: {dest}")
                 return dest, ext
