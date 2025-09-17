@@ -1,6 +1,6 @@
 /.secrets
 /private-scripts
-AGENT.md
+AGENTS.md
 .venv/
 logs/
 nuro/dist/
@@ -12,3 +12,4 @@ temporary.md
 handover.md
 publish.sh
 nuro.egg-info
+cmds_staging
