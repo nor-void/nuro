@@ -10,9 +10,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$UnsafeDevModeRequested = $false
+$UnsafeDevModeState = $null
 if ($PSBoundParameters.ContainsKey('UnsafeDevMode') -and $UnsafeDevMode.IsPresent) {
-  $UnsafeDevModeRequested = $true
+  $UnsafeDevModeState = $true
 }
 
 if (-not $AdditionalArgs) { $AdditionalArgs = @() }
@@ -23,25 +23,25 @@ foreach ($arg in $AdditionalArgs) {
   if (-not $trimmed) { continue }
   if ($trimmed -eq '--') { continue }
   if ($trimmed -match '^--?no-unsafe-?dev-?mode$') {
-    $UnsafeDevModeRequested = $false
+    $UnsafeDevModeState = $false
     continue
   }
   if ($trimmed -match '^--?unsafe-?dev-?mode(?:=(.+))?$') {
     $value = $Matches[1]
     if ([string]::IsNullOrEmpty($value)) {
-      $UnsafeDevModeRequested = $true
+      $UnsafeDevModeState = $true
       continue
     }
     $normalized = $value.Trim().ToLowerInvariant()
     switch ($normalized) {
-      '1' { $UnsafeDevModeRequested = $true }
-      'true' { $UnsafeDevModeRequested = $true }
-      'yes' { $UnsafeDevModeRequested = $true }
-      'on' { $UnsafeDevModeRequested = $true }
-      '0' { $UnsafeDevModeRequested = $false }
-      'false' { $UnsafeDevModeRequested = $false }
-      'no' { $UnsafeDevModeRequested = $false }
-      'off' { $UnsafeDevModeRequested = $false }
+      '1' { $UnsafeDevModeState = $true }
+      'true' { $UnsafeDevModeState = $true }
+      'yes' { $UnsafeDevModeState = $true }
+      'on' { $UnsafeDevModeState = $true }
+      '0' { $UnsafeDevModeState = $false }
+      'false' { $UnsafeDevModeState = $false }
+      'no' { $UnsafeDevModeState = $false }
+      'off' { $UnsafeDevModeState = $false }
       default {
         throw "unsafe-dev-mode オプションの値 '$value' は true/false で指定してください"
       }
@@ -383,58 +383,27 @@ function Ensure-Path {
   if ($added) { Log "added to User PATH: $BIN_DIR" } else { Log "already in User PATH: $BIN_DIR" }
 }
 
-function Apply-UnsafeDevMode([bool]$Enabled) {
-  if (-not $Enabled) { return }
-  $configDir = Join-PathSafe $NURO_HOME 'config'
-  Ensure-Dir $configDir
-  $bucketPath = Join-PathSafe $configDir 'buckets.json'
-  if (-not (Test-Path $bucketPath)) {
-    $pyEnsure = @"
-from nuro.registry import load_registry
-load_registry()
-"@
-    & $VENV_PY '-c' $pyEnsure
-    if ($LASTEXITCODE -ne 0) {
-      throw "buckets.json の初期化に失敗しました ($LASTEXITCODE)"
+function Apply-UnsafeDevMode($State) {
+  if ($null -eq $State) { return }
+  $Enabled = [bool]$State
+  $marker = Join-PathSafe $NURO_HOME 'nusafedevmode'
+  if ($Enabled) {
+    try {
+      [System.IO.File]::WriteAllText($marker, '', [System.Text.Encoding]::UTF8)
+      Log "unsafe-dev-mode マーカーを作成しました: $marker"
+    } catch {
+      throw "unsafe-dev-mode マーカーの作成に失敗しました: $($_.Exception.Message)"
+    }
+  } else {
+    if (Test-Path $marker) {
+      try {
+        Remove-Item -Force $marker -ErrorAction Stop
+        Log "unsafe-dev-mode マーカーを削除しました: $marker"
+      } catch {
+        throw "unsafe-dev-mode マーカーの削除に失敗しました: $($_.Exception.Message)"
+      }
     }
   }
-  $pyCode = @"
-from nuro.registry import load_registry, save_registry
-
-def apply_flag() -> None:
-    reg = load_registry()
-    if not isinstance(reg, dict):
-        raise SystemExit("registry must be a dictionary")
-
-    buckets = reg.get("buckets")
-    if not isinstance(buckets, list):
-        buckets = []
-        reg["buckets"] = buckets
-
-    changed = False
-    for bucket in buckets:
-        if not isinstance(bucket, dict):
-            continue
-        if not bucket.get("unsafe-dev-mode"):
-            bucket["unsafe-dev-mode"] = True
-            changed = True
-
-    if not buckets:
-        reg["buckets"] = [{"name": "official", "unsafe-dev-mode": True}]
-        changed = True
-
-    if changed:
-        save_registry(reg)
-
-
-if __name__ == "__main__":
-    apply_flag()
-"@
-  & $VENV_PY '-c' $pyCode
-  if ($LASTEXITCODE -ne 0) {
-    throw "unsafe-dev-mode 設定の適用に失敗しました ($LASTEXITCODE)"
-  }
-  Log 'unsafe-dev-mode フラグをbuckets.jsonへ適用しました'
 }
 
 # ------------------------
@@ -467,7 +436,7 @@ try {
   Install-Nuro
   Ensure-Shim
   Ensure-Path
-  Apply-UnsafeDevMode $UnsafeDevModeRequested
+  Apply-UnsafeDevMode $UnsafeDevModeState
   $code = Validate-Run
   # Summary
   if ($Channel -eq 'dev') { Log ("Summary: Channel=dev Branch=$Branch Repo=$Repo") }
