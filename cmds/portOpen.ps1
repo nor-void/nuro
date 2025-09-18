@@ -1,4 +1,4 @@
-# Auto-generated nuro command (inline original content)
+﻿# Auto-generated nuro command (inline original content)
 
 function NuroUsage_PortOpen {
   'nuro port-open <PortNo>'

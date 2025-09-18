@@ -1,4 +1,4 @@
-# Auto-generated nuro command (inline original content)
+﻿# Auto-generated nuro command (inline original content)
 
 function NuroUsage_Install {
   'nuro install <Package> [<Version>] # PRIVATE_PYPI_REPO 環境変数にホイールを保管したディレクトリを設定してください。'
