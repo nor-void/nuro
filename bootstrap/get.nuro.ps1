@@ -2,11 +2,54 @@ param(
   [ValidateSet('prod','test','dev')][string]$Channel = 'prod',
   [string]$Version,
   [string]$Repo = 'https://github.com/OWNER/REPO.git',
-  [string]$Branch = 'codex'
+  [string]$Branch = 'codex',
+  [Alias('unsafe-dev-mode','unsafe_dev_mode')][switch]$UnsafeDevMode,
+  [Parameter(ValueFromRemainingArguments=$true)][string[]]$AdditionalArgs
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$UnsafeDevModeRequested = $false
+if ($PSBoundParameters.ContainsKey('UnsafeDevMode') -and $UnsafeDevMode.IsPresent) {
+  $UnsafeDevModeRequested = $true
+}
+
+if (-not $AdditionalArgs) { $AdditionalArgs = @() }
+
+foreach ($arg in $AdditionalArgs) {
+  if (-not $arg) { continue }
+  $trimmed = $arg.Trim()
+  if (-not $trimmed) { continue }
+  if ($trimmed -eq '--') { continue }
+  if ($trimmed -match '^--?no-unsafe-?dev-?mode$') {
+    $UnsafeDevModeRequested = $false
+    continue
+  }
+  if ($trimmed -match '^--?unsafe-?dev-?mode(?:=(.+))?$') {
+    $value = $Matches[1]
+    if ([string]::IsNullOrEmpty($value)) {
+      $UnsafeDevModeRequested = $true
+      continue
+    }
+    $normalized = $value.Trim().ToLowerInvariant()
+    switch ($normalized) {
+      '1' { $UnsafeDevModeRequested = $true }
+      'true' { $UnsafeDevModeRequested = $true }
+      'yes' { $UnsafeDevModeRequested = $true }
+      'on' { $UnsafeDevModeRequested = $true }
+      '0' { $UnsafeDevModeRequested = $false }
+      'false' { $UnsafeDevModeRequested = $false }
+      'no' { $UnsafeDevModeRequested = $false }
+      'off' { $UnsafeDevModeRequested = $false }
+      default {
+        throw "unsafe-dev-mode オプションの値 '$value' は true/false で指定してください"
+      }
+    }
+    continue
+  }
+  throw "不明な引数を受け取りました: $trimmed"
+}
 
 # ------------------------
 # Helpers / Environment
@@ -340,6 +383,51 @@ function Ensure-Path {
   if ($added) { Log "added to User PATH: $BIN_DIR" } else { Log "already in User PATH: $BIN_DIR" }
 }
 
+function Apply-UnsafeDevMode([bool]$Enabled) {
+  if (-not $Enabled) { return }
+  $configDir = Join-PathSafe $NURO_HOME 'config'
+  Ensure-Dir $configDir
+  $bucketPath = Join-PathSafe $configDir 'buckets.json'
+  if (-not (Test-Path $bucketPath)) {
+    $pyEnsure = @"
+from nuro.registry import load_registry
+load_registry()
+"@
+    & $VENV_PY '-c' $pyEnsure
+    if ($LASTEXITCODE -ne 0) {
+      throw "buckets.json の初期化に失敗しました ($LASTEXITCODE)"
+    }
+  }
+  $pyCode = @"
+import sys
+from nuro.registry import load_registry, save_registry
+
+reg = load_registry()
+buckets = reg.get("buckets")
+changed = False
+if not isinstance(buckets, list):
+    buckets = []
+    reg["buckets"] = buckets
+    changed = True
+
+for bucket in list(buckets):
+    if not isinstance(bucket, dict):
+        changed = True
+        continue
+    if not bucket.get("unsafe-dev-mode"):
+        bucket["unsafe-dev-mode"] = True
+        changed = True
+
+if changed:
+    save_registry(reg)
+"@
+  & $VENV_PY '-c' $pyCode
+  if ($LASTEXITCODE -ne 0) {
+    throw "unsafe-dev-mode 設定の適用に失敗しました ($LASTEXITCODE)"
+  }
+  Log 'unsafe-dev-mode フラグをbuckets.jsonへ適用しました'
+}
+
 # ------------------------
 # Validation
 # ------------------------
@@ -370,6 +458,7 @@ try {
   Install-Nuro
   Ensure-Shim
   Ensure-Path
+  Apply-UnsafeDevMode $UnsafeDevModeRequested
   $code = Validate-Run
   # Summary
   if ($Channel -eq 'dev') { Log ("Summary: Channel=dev Branch=$Branch Repo=$Repo") }
