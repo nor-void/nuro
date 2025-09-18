@@ -10,6 +10,43 @@ function Trace([string]$Message) {
   }
 }
 
+function Get-NuroVenvInfo {
+  $home = $env:USERPROFILE
+  if (-not $home -and $HOME) { $home = $HOME }
+  if (-not $home) { return $null }
+  $nuroHome = Join-Path $home '.nuro'
+  $venvRoot = Join-Path $nuroHome 'venv'
+  $candidates = @(
+    Join-Path $venvRoot 'Scripts',
+    Join-Path $venvRoot 'bin'
+  )
+  foreach ($dir in $candidates) {
+    if (Test-Path $dir) {
+      return [pscustomobject]@{ Root = $venvRoot; Scripts = (Resolve-Path $dir).ProviderPath }
+    }
+  }
+  return $null
+}
+
+function Use-NuroVenv {
+  $info = Get-NuroVenvInfo
+  if (-not $info) { return }
+  $sep = [IO.Path]::PathSeparator
+  $current = $env:PATH
+  $segments = @()
+  if ($current) {
+    $segments = $current.Split($sep, [System.StringSplitOptions]::RemoveEmptyEntries)
+  }
+  if (-not ($segments -contains $info.Scripts)) {
+    if ($current) {
+      $env:PATH = "$($info.Scripts)$sep$current"
+    } else {
+      $env:PATH = $info.Scripts
+    }
+  }
+  $env:VIRTUAL_ENV = $info.Root
+}
+
 # Use current PowerShell session by default.
 # To force Python dispatch instead, set: $env:NURO_USE_CURRENT_POWERSHELL = '0'
 $__useCurrentShell = $true
@@ -309,6 +346,7 @@ function Invoke-CommandFromBucket {
     switch ($Ext) {
       'ps1' {
         Trace "exec ps1: path=$scriptPath"
+        Use-NuroVenv
         . $scriptPath
         $main  = "NuroCmd_$Cmd"
         $usage = "NuroUsage_$Cmd"

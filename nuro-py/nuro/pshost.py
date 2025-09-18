@@ -5,11 +5,40 @@ import platform
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Iterable, List, Optional, NamedTuple
+from typing import Dict, Iterable, List, Optional, NamedTuple, Tuple
 from uuid import uuid4
 
 from .debuglog import debug
 from .paths import logs_dir, ensure_tree
+
+
+def _resolve_venv_paths() -> Optional[Tuple[Path, Path]]:
+    """Return (scripts_dir, venv_root) for ~/.nuro/venv when present."""
+    home = Path.home()
+    venv_root = home / ".nuro" / "venv"
+    candidates = [
+        venv_root / "Scripts",  # Windows laid-out venv
+        venv_root / "bin",      # POSIX laid-out venv
+    ]
+    for scripts in candidates:
+        if scripts.exists():
+            return scripts, venv_root
+    return None
+
+
+def _ps_env_with_venv() -> Dict[str, str]:
+    """Augment the current env so PowerShell can see pip/python from the venv."""
+    env = dict(os.environ)
+    resolved = _resolve_venv_paths()
+    if not resolved:
+        return env
+    scripts_dir, venv_root = resolved
+    path_value = env.get("PATH", "")
+    scripts_str = str(scripts_dir)
+    if scripts_str not in path_value.split(os.pathsep):
+        env["PATH"] = scripts_str + os.pathsep + path_value if path_value else scripts_str
+    env["VIRTUAL_ENV"] = str(venv_root)
+    return env
 
 class PowerShellNotFound(RuntimeError):
     pass
@@ -57,6 +86,7 @@ def _detect_ps_major(shell: List[str]) -> Optional[int]:
             encoding="utf-8",
             errors="replace",
             timeout=5,
+            env=_ps_env_with_venv(),
         )
         out = (proc.stdout or "").strip()
         return int(out)
@@ -92,6 +122,7 @@ def run_ps_file(file: Path, args: Iterable[str]) -> int:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=_ps_env_with_venv(),
         )
     except Exception as e:
         debug(f"Failed to start PowerShell: {e}")
@@ -149,6 +180,7 @@ def run_usage_for_ps1(target: Path, cmd_name: str, ignore_execution_policy: bool
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=_ps_env_with_venv(),
         )
     except Exception as e:
         debug(f"Failed to start PowerShell: {e}")
@@ -200,6 +232,7 @@ def run_usage_for_ps1_capture(
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=_ps_env_with_venv(),
         )
         out = (proc.stdout or "").strip()
         if proc.returncode == 0:
@@ -262,6 +295,7 @@ def run_cmd_for_ps1(target: Path, cmd_name: str, args: Iterable[str], ignore_exe
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=_ps_env_with_venv(),
         )
     except Exception as e:
         debug(f"Failed to start PowerShell: {e}")
