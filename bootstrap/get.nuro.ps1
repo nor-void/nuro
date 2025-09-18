@@ -385,6 +385,7 @@ function Ensure-Path {
 
 function Apply-UnsafeDevMode([bool]$Enabled) {
   if (-not $Enabled) { return }
+<<<<<<< HEAD
   $configDir = Join-PathSafe $NURO_HOME 'config'
   Ensure-Dir $configDir
   $bucketPath = Join-PathSafe $configDir 'buckets.json'
@@ -398,6 +399,8 @@ load_registry()
       throw "buckets.json の初期化に失敗しました ($LASTEXITCODE)"
     }
   }
+=======
+>>>>>>> 2a9eac5d408fc76853bbce2ba26344465d13bc0a
   $pyCode = @"
 import sys
 from nuro.registry import load_registry, save_registry
