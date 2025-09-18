@@ -5,7 +5,7 @@ import platform
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, NamedTuple
 from uuid import uuid4
 
 from .debuglog import debug
@@ -34,8 +34,39 @@ def _ps_quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
+class UsageCaptureResult(NamedTuple):
+    text: str
+    error_kind: Optional[str]
+    error_detail: Optional[str]
+
+
+def _build_ps_shell(ignore_execution_policy: bool = False) -> List[str]:
+    shell = list(find_powershell())
+    if ignore_execution_policy:
+        shell += ["-ExecutionPolicy", "Bypass"]
+    return shell
+
+
+def _detect_ps_major(shell: List[str]) -> Optional[int]:
+    try:
+        proc = subprocess.run(
+            shell + ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+        out = (proc.stdout or "").strip()
+        return int(out)
+    except Exception as e:
+        debug(f"Failed to detect PowerShell version: {e}")
+        return None
+
+
 def run_ps_file(file: Path, args: Iterable[str]) -> int:
-    shell = find_powershell()
+    shell = _build_ps_shell()
     qpath = _ps_quote(str(file))
     qargs = " ".join(_ps_quote(str(a)) for a in args)
     # Prepare transcript to capture host (Write-Host) output reliably
@@ -90,9 +121,9 @@ def run_ps_file(file: Path, args: Iterable[str]) -> int:
     return rc
 
 
-def run_usage_for_ps1(target: Path, cmd_name: str) -> int:
+def run_usage_for_ps1(target: Path, cmd_name: str, ignore_execution_policy: bool = False) -> int:
     """Run NuroUsage_<name> by dot-sourcing the target without creating a wrapper file."""
-    shell = find_powershell()
+    shell = _build_ps_shell(ignore_execution_policy)
     qtarget = _ps_quote(str(target))
     ensure_tree()
     ts_path = logs_dir() / f"ps-transcript-{uuid4().hex}.log"
@@ -141,32 +172,68 @@ def run_usage_for_ps1(target: Path, cmd_name: str) -> int:
     return rc
 
 
-def run_usage_for_ps1_capture(target: Path, cmd_name: str) -> str:
+def run_usage_for_ps1_capture(
+    target: Path,
+    cmd_name: str,
+    ignore_execution_policy: bool = False,
+) -> UsageCaptureResult:
     """Invoke NuroUsage_<name> from a PS1 file and capture stdout as text.
 
-    Returns the captured stdout (may be empty). Errors are swallowed and
-    returned as empty string.
+    Returns UsageCaptureResult including error classification when invocation fails.
     """
-    shell = find_powershell()
+    shell = _build_ps_shell(ignore_execution_policy)
+    ps_major = _detect_ps_major(shell)
     usage_fn = f"NuroUsage_{cmd_name}"
     qtarget = _ps_quote(str(target))
-    ps_cmd = f". {qtarget}; if (Get-Command {usage_fn} -ErrorAction SilentlyContinue) {{ & {usage_fn} }} else {{ Write-Output 'usage unavailable' }}"
+    ps_cmd = (
+        f". {qtarget}; "
+        f"if (Get-Command {usage_fn} -ErrorAction SilentlyContinue) {{ & {usage_fn} }} "
+        f"else {{ Write-Output 'usage unavailable' }}"
+    )
     try:
         cmd = shell + ["-NoProfile", "-Command", ps_cmd]
         debug(f"Invoking PowerShell (capture): {' '.join(cmd)}")
-        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
-        out = proc.stdout or ""
-        return out.strip()
-    except Exception as e:
-        debug(f"run_usage_for_ps1_capture failed: {e}")
-        return ""
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        out = (proc.stdout or "").strip()
+        if proc.returncode == 0:
+            return UsageCaptureResult(out, None, None)
 
-def run_cmd_for_ps1(target: Path, cmd_name: str, args: Iterable[str]) -> int:
+        detail = out or f"exit code {proc.returncode} with no output"
+        debug(
+            f"Usage capture failed: cmd={cmd_name} ps_version={ps_major} detail={detail}"
+        )
+        is_ps5_issue = False
+        lowered = detail.lower()
+        if ps_major is not None and ps_major <= 5:
+            ps5_markers = (
+                "parsererror",
+                "unexpected token",
+                "valuefromremainingarguments",
+                "the token '??'",
+            )
+            if any(marker in lowered for marker in ps5_markers):
+                is_ps5_issue = True
+
+        kind = "ps5" if is_ps5_issue else "generic"
+        return UsageCaptureResult("", kind, detail)
+    except Exception as e:
+        detail = str(e)
+        debug(f"run_usage_for_ps1_capture failed: {detail}")
+        return UsageCaptureResult("", "generic", detail)
+
+def run_cmd_for_ps1(target: Path, cmd_name: str, args: Iterable[str], ignore_execution_policy: bool = False) -> int:
     """Run NuroCmd_<name> by dot-sourcing the target without creating a wrapper file.
 
     CLI args are forwarded via PowerShell's automatic $args and splatted to the function.
     """
-    shell = find_powershell()
+    shell = _build_ps_shell(ignore_execution_policy)
     qtarget = _ps_quote(str(target))
     ensure_tree()
     ts_path = logs_dir() / f"ps-transcript-{uuid4().hex}.log"

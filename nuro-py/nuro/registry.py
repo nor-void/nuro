@@ -59,6 +59,21 @@ def _normalize_registry(obj: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             for s in buckets
         ]
 
+    # Ensure boolean default for unsafe-dev-mode
+    normalized_buckets = []
+    for b in buckets:
+        if not isinstance(b, dict):
+            continue
+        try:
+            if not b.get("unsafe-dev-mode"):
+                b.pop("unsafe-dev-mode", None)
+            else:
+                b["unsafe-dev-mode"] = bool(b.get("unsafe-dev-mode"))
+        except Exception:
+            b.pop("unsafe-dev-mode", None)
+        normalized_buckets.append(b)
+    buckets = normalized_buckets
+
     # Normalize pins to dict[str,str]
     if pins is None:
         pins = {}
