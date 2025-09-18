@@ -101,13 +101,6 @@ function NuroCmd_Install {
         $shimContent = "@echo off`r`n""$VENV_PY"" -m $Module %*"
         Set-Content -Path $SHIM -Value $shimContent -Encoding Ascii
 
-        # PATH 追加（User）
-        $uPath = [Environment]::GetEnvironmentVariable('Path','User')
-        if ($uPath -notmatch [Regex]::Escape($BIN_DIR)) {
-          [Environment]::SetEnvironmentVariable('Path', ($uPath.TrimEnd(';') + ';' + $BIN_DIR), 'User')
-        }
-        $env:Path = ($env:Path.TrimEnd(';') + ';' + $BIN_DIR)
-
         Write-Host "Shim created: $SHIM"
         Write-Host "Run: $ShimName.shim --help"
       } catch {
