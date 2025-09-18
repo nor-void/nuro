@@ -39,7 +39,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Ensure ~/.nuro tree exists
     ensure_nuro_tree()
 
-    if refresh_usage:
+    if refresh_usage or not argv:
         apply_unsafe_dev_mode_from_marker()
 
     if not argv:
