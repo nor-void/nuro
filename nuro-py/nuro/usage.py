@@ -154,7 +154,13 @@ def print_root_usage(refresh: bool = False) -> None:
         if official_bucket is None:
             cfg = load_app_config()
             base = official_bucket_base(cfg)
-            official_bucket = {"name": bucket_name, "uri": f"raw::{base}", "priority": 100, "trusted": True}
+            official_bucket = {
+                "name": bucket_name,
+                "uri": f"raw::{base}",
+                "priority": 100,
+                "trusted": True,
+                "unsafe-dev-mode": False,
+            }
         # usage text cache directory
         ucache_dir = cache_dir() / "usage" / bucket_name
         ucache_dir.mkdir(parents=True, exist_ok=True)
@@ -177,7 +183,8 @@ def print_root_usage(refresh: bool = False) -> None:
                             fetch_to(t, src["url"], timeout=10)
                     out = ""
                     if t.exists():
-                        out = run_usage_for_ps1_capture(t, n) or ""
+                        ignore_policy = bool(official_bucket.get("unsafe-dev-mode"))
+                        out = run_usage_for_ps1_capture(t, n, ignore_execution_policy=ignore_policy) or ""
                     # update cache file (even if empty, to avoid repeated fetches)
                     try:
                         ufile.write_text(out, encoding="utf-8")

@@ -34,8 +34,15 @@ def _ps_quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
+def _build_ps_shell(ignore_execution_policy: bool = False) -> List[str]:
+    shell = list(find_powershell())
+    if ignore_execution_policy:
+        shell += ["-ExecutionPolicy", "Bypass"]
+    return shell
+
+
 def run_ps_file(file: Path, args: Iterable[str]) -> int:
-    shell = find_powershell()
+    shell = _build_ps_shell()
     qpath = _ps_quote(str(file))
     qargs = " ".join(_ps_quote(str(a)) for a in args)
     # Prepare transcript to capture host (Write-Host) output reliably
@@ -90,9 +97,9 @@ def run_ps_file(file: Path, args: Iterable[str]) -> int:
     return rc
 
 
-def run_usage_for_ps1(target: Path, cmd_name: str) -> int:
+def run_usage_for_ps1(target: Path, cmd_name: str, ignore_execution_policy: bool = False) -> int:
     """Run NuroUsage_<name> by dot-sourcing the target without creating a wrapper file."""
-    shell = find_powershell()
+    shell = _build_ps_shell(ignore_execution_policy)
     qtarget = _ps_quote(str(target))
     ensure_tree()
     ts_path = logs_dir() / f"ps-transcript-{uuid4().hex}.log"
@@ -141,13 +148,13 @@ def run_usage_for_ps1(target: Path, cmd_name: str) -> int:
     return rc
 
 
-def run_usage_for_ps1_capture(target: Path, cmd_name: str) -> str:
+def run_usage_for_ps1_capture(target: Path, cmd_name: str, ignore_execution_policy: bool = False) -> str:
     """Invoke NuroUsage_<name> from a PS1 file and capture stdout as text.
 
     Returns the captured stdout (may be empty). Errors are swallowed and
     returned as empty string.
     """
-    shell = find_powershell()
+    shell = _build_ps_shell(ignore_execution_policy)
     usage_fn = f"NuroUsage_{cmd_name}"
     qtarget = _ps_quote(str(target))
     ps_cmd = f". {qtarget}; if (Get-Command {usage_fn} -ErrorAction SilentlyContinue) {{ & {usage_fn} }} else {{ Write-Output 'usage unavailable' }}"
@@ -161,12 +168,12 @@ def run_usage_for_ps1_capture(target: Path, cmd_name: str) -> str:
         debug(f"run_usage_for_ps1_capture failed: {e}")
         return ""
 
-def run_cmd_for_ps1(target: Path, cmd_name: str, args: Iterable[str]) -> int:
+def run_cmd_for_ps1(target: Path, cmd_name: str, args: Iterable[str], ignore_execution_policy: bool = False) -> int:
     """Run NuroCmd_<name> by dot-sourcing the target without creating a wrapper file.
 
     CLI args are forwarded via PowerShell's automatic $args and splatted to the function.
     """
-    shell = find_powershell()
+    shell = _build_ps_shell(ignore_execution_policy)
     qtarget = _ps_quote(str(target))
     ensure_tree()
     ts_path = logs_dir() / f"ps-transcript-{uuid4().hex}.log"

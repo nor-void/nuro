@@ -32,6 +32,7 @@ def _default_registry() -> Dict[str, Any]:
                 "uri": f"raw::{base}",
                 "priority": 100,
                 "trusted": True,
+                "unsafe-dev-mode": False,
             }
         ],
         "pins": {},
@@ -55,9 +56,22 @@ def _normalize_registry(obj: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 "uri": s,
                 "priority": 50,
                 "trusted": False,
+                "unsafe-dev-mode": False,
             }
             for s in buckets
         ]
+
+    # Ensure boolean default for unsafe-dev-mode
+    normalized_buckets = []
+    for b in buckets:
+        if not isinstance(b, dict):
+            continue
+        try:
+            b["unsafe-dev-mode"] = bool(b.get("unsafe-dev-mode", False))
+        except Exception:
+            b["unsafe-dev-mode"] = False
+        normalized_buckets.append(b)
+    buckets = normalized_buckets
 
     # Normalize pins to dict[str,str]
     if pins is None:

@@ -29,31 +29,55 @@ def _split_bucket_hint(name: str) -> Tuple[Optional[str], str]:
     return None, name
 
 
-def _local_paths_for_ext(cmd: str, bucket_hint: Optional[str], reg: Dict, ext: str) -> List[Path]:
-    paths: List[Path] = []
+def _bucket_allows_unsafe(bucket: Optional[Dict]) -> bool:
+    try:
+        return bool(bucket and bucket.get("unsafe-dev-mode"))
+    except Exception:
+        return False
+
+
+def _local_paths_for_ext(
+    cmd: str,
+    bucket_hint: Optional[str],
+    reg: Dict,
+    ext: str,
+) -> List[Tuple[Path, Optional[Dict]]]:
+    paths: List[Tuple[Path, Optional[Dict]]] = []
     base = cmds_cache_base()
-    # flat legacy path (not used for new cache structure but keep for completeness)
-    paths.append(base / f"{cmd}.{ext}")
-    # pinned bucket preferred
+    buckets: List[Dict] = [
+        b for b in reg.get("buckets", []) if isinstance(b, dict)
+    ]
+    buckets_by_name = {str(b.get("name", "")): b for b in buckets}
+
+    # flat legacy path (bucket unknown)
+    paths.append((base / f"{cmd}.{ext}", None))
+
     pins = reg.get("pins", {}) or {}
     pinned = pins.get(cmd)
+
     if bucket_hint:
-        paths.append(base / bucket_hint / f"{cmd}.{ext}")
+        bh_bucket = buckets_by_name.get(bucket_hint)
+        paths.append((base / bucket_hint / f"{cmd}.{ext}", bh_bucket))
+
     if pinned:
-        paths.append(base / pinned / f"{cmd}.{ext}")
+        pin_bucket = buckets_by_name.get(pinned)
+        paths.append((base / pinned / f"{cmd}.{ext}", pin_bucket))
+
     # all buckets by priority
-    buckets = sorted(reg.get("buckets", []), key=lambda x: int(x.get("priority", 0)), reverse=True)
-    for b in buckets:
-        paths.append(base / b.get("name", "") / f"{cmd}.{ext}")
+    sorted_buckets = sorted(buckets, key=lambda x: int(x.get("priority", 0)), reverse=True)
+    for b in sorted_buckets:
+        name = str(b.get("name", ""))
+        paths.append((base / name / f"{cmd}.{ext}", b))
+
     # dedup while preserving order
     seen = set()
-    uniq: List[Path] = []
-    for p in paths:
-        sp = str(p)
+    uniq: List[Tuple[Path, Optional[Dict]]] = []
+    for p, b in paths:
+        sp = (str(p), b.get("name") if isinstance(b, dict) else None)
         if sp in seen:
             continue
         seen.add(sp)
-        uniq.append(p)
+        uniq.append((p, b))
     return uniq
 
 
@@ -77,7 +101,9 @@ def _bucket_resolution_order(cmd: str, reg: Dict, bucket_hint: Optional[str]) ->
         order.append(b)
     return order
 
-def _try_fetch_any(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[Tuple[Path, str]]:
+def _try_fetch_any(
+    cmd: str, reg: Dict, bucket_hint: Optional[str]
+) -> Optional[Tuple[Path, str, Optional[Dict]]]:
     exts = ["ps1", "py", "sh"]
     for b in _bucket_resolution_order(cmd, reg, bucket_hint):
         bname = str(b.get("name", ""))
@@ -86,7 +112,7 @@ def _try_fetch_any(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[
             dest = cmds_cache_base() / bname / f"{cmd}.{ext}"
             if dest.exists():
                 debug(f"Fetch fallback found cached file: {dest}")
-                return dest, ext
+                return dest, ext, b
             src = resolve_cmd_source_with_meta(b, cmd, ext=ext)
             debug(f"Attempting fetch: bucket={bname} cmd={cmd} ext={ext} dest={dest} src={src}")
             if src.get("kind") == "local":
@@ -97,7 +123,7 @@ def _try_fetch_any(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[
                         data = local_path.read_bytes()
                         dest.write_bytes(data)
                         debug(f"Copied local command from {local_path} -> {dest}")
-                        return dest, ext
+                        return dest, ext, b
                     except Exception as copy_err:
                         debug(f"Failed to copy local command from {local_path}: {copy_err}")
                         continue
@@ -106,7 +132,7 @@ def _try_fetch_any(cmd: str, reg: Dict, bucket_hint: Optional[str]) -> Optional[
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     fetch_to(dest, src["url"])
                     debug(f"Fetched remote command for cmd={cmd} ext={ext} bucket={bname} -> {dest}")
-                    return dest, ext
+                    return dest, ext, b
                 except Exception as fetch_err:
                     debug(f"Fetch error bucket={bname} cmd={cmd} ext={ext}: {fetch_err}")
                     continue
@@ -124,16 +150,16 @@ def run_command(name: str, args: List[str]) -> int:
     # Search local caches in order: ext priority ps1 -> py -> sh
     for ext in ("ps1", "py", "sh"):
         paths = _local_paths_for_ext(cmd, bucket_hint, reg, ext)
-        for p in paths:
+        for p, bucket in paths:
             if p.exists():
                 debug(f"Using cached script: cmd={cmd} ext={ext} path={p}")
                 if help_requested:
                     if ext == "ps1":
-                        return run_usage_for_ps1(p, cmd)
+                        return run_usage_for_ps1(p, cmd, ignore_execution_policy=_bucket_allows_unsafe(bucket))
                     print(f"nuro {cmd} - no usage available")
                     return 0
                 if ext == "ps1":
-                    return run_cmd_for_ps1(p, cmd, args)
+                    return run_cmd_for_ps1(p, cmd, args, ignore_execution_policy=_bucket_allows_unsafe(bucket))
                 if ext == "py":
                     if not _ensure_script_requirements(p):
                         return 1
@@ -157,15 +183,15 @@ def run_command(name: str, args: List[str]) -> int:
     # Attempt on-demand fetch for first available ext/bucket
     fetched = _try_fetch_any(cmd, reg, bucket_hint)
     if fetched:
-        path, ext = fetched
+        path, ext, bucket = fetched
         debug(f"Using freshly fetched script: cmd={cmd} ext={ext} path={path}")
         if help_requested:
             if ext == "ps1":
-                return run_usage_for_ps1(path, cmd)
+                return run_usage_for_ps1(path, cmd, ignore_execution_policy=_bucket_allows_unsafe(bucket))
             print(f"nuro {cmd} - no usage available")
             return 0
         if ext == "ps1":
-            return run_cmd_for_ps1(path, cmd, args)
+            return run_cmd_for_ps1(path, cmd, args, ignore_execution_policy=_bucket_allows_unsafe(bucket))
         if ext == "py":
             if not _ensure_script_requirements(path):
                 return 1
