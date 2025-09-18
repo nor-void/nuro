@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .paths import buckets_path, ensure_tree
+from .paths import buckets_path, ensure_tree, nuro_home
 from .config import load_app_config, official_bucket_base
 
 
@@ -111,3 +111,33 @@ def save_registry(obj: Dict[str, Any]) -> None:
     p = buckets_path()
     normalized = _normalize_registry(obj)
     p.write_text(json.dumps(normalized, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+
+def apply_unsafe_dev_mode_from_marker() -> bool:
+    """Enable unsafe-dev-mode on all buckets when the marker file is present.
+
+    Returns True if the registry file was updated.
+    """
+
+    marker = nuro_home() / "nusafedevmode"
+    if not marker.exists():
+        return False
+
+    registry = load_registry()
+    buckets = registry.get("buckets")
+    if not isinstance(buckets, list):
+        buckets = []
+        registry["buckets"] = buckets
+
+    changed = False
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        if not bucket.get("unsafe-dev-mode"):
+            bucket["unsafe-dev-mode"] = True
+            changed = True
+
+    if changed:
+        save_registry(registry)
+    return changed

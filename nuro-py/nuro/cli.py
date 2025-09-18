@@ -8,6 +8,7 @@ from .runner import run_command, ensure_nuro_tree
 from .usage import print_root_usage
 from . import __version__
 from .debuglog import set_debug_enabled, is_debug_enabled
+from .registry import apply_unsafe_dev_mode_from_marker
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -37,6 +38,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Ensure ~/.nuro tree exists
     ensure_nuro_tree()
+
+    if refresh_usage or not argv:
+        apply_unsafe_dev_mode_from_marker()
 
     if not argv:
         print_root_usage(refresh=refresh_usage)

@@ -2,11 +2,54 @@ param(
   [ValidateSet('prod','test','dev')][string]$Channel = 'prod',
   [string]$Version,
   [string]$Repo = 'https://github.com/OWNER/REPO.git',
-  [string]$Branch = 'codex'
+  [string]$Branch = 'codex',
+  [Alias('unsafe-dev-mode','unsafe_dev_mode')][switch]$UnsafeDevMode,
+  [Parameter(ValueFromRemainingArguments=$true)][string[]]$AdditionalArgs
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$UnsafeDevModeState = $null
+if ($PSBoundParameters.ContainsKey('UnsafeDevMode') -and $UnsafeDevMode.IsPresent) {
+  $UnsafeDevModeState = $true
+}
+
+if (-not $AdditionalArgs) { $AdditionalArgs = @() }
+
+foreach ($arg in $AdditionalArgs) {
+  if (-not $arg) { continue }
+  $trimmed = $arg.Trim()
+  if (-not $trimmed) { continue }
+  if ($trimmed -eq '--') { continue }
+  if ($trimmed -match '^--?no-unsafe-?dev-?mode$') {
+    $UnsafeDevModeState = $false
+    continue
+  }
+  if ($trimmed -match '^--?unsafe-?dev-?mode(?:=(.+))?$') {
+    $value = $Matches[1]
+    if ([string]::IsNullOrEmpty($value)) {
+      $UnsafeDevModeState = $true
+      continue
+    }
+    $normalized = $value.Trim().ToLowerInvariant()
+    switch ($normalized) {
+      '1' { $UnsafeDevModeState = $true }
+      'true' { $UnsafeDevModeState = $true }
+      'yes' { $UnsafeDevModeState = $true }
+      'on' { $UnsafeDevModeState = $true }
+      '0' { $UnsafeDevModeState = $false }
+      'false' { $UnsafeDevModeState = $false }
+      'no' { $UnsafeDevModeState = $false }
+      'off' { $UnsafeDevModeState = $false }
+      default {
+        throw "unsafe-dev-mode オプションの値 '$value' は true/false で指定してください"
+      }
+    }
+    continue
+  }
+  throw "不明な引数を受け取りました: $trimmed"
+}
 
 # ------------------------
 # Helpers / Environment
@@ -340,6 +383,29 @@ function Ensure-Path {
   if ($added) { Log "added to User PATH: $BIN_DIR" } else { Log "already in User PATH: $BIN_DIR" }
 }
 
+function Apply-UnsafeDevMode($State) {
+  if ($null -eq $State) { return }
+  $Enabled = [bool]$State
+  $marker = Join-PathSafe $NURO_HOME 'nusafedevmode'
+  if ($Enabled) {
+    try {
+      [System.IO.File]::WriteAllText($marker, '', [System.Text.Encoding]::UTF8)
+      Log "unsafe-dev-mode マーカーを作成しました: $marker"
+    } catch {
+      throw "unsafe-dev-mode マーカーの作成に失敗しました: $($_.Exception.Message)"
+    }
+  } else {
+    if (Test-Path $marker) {
+      try {
+        Remove-Item -Force $marker -ErrorAction Stop
+        Log "unsafe-dev-mode マーカーを削除しました: $marker"
+      } catch {
+        throw "unsafe-dev-mode マーカーの削除に失敗しました: $($_.Exception.Message)"
+      }
+    }
+  }
+}
+
 # ------------------------
 # Validation
 # ------------------------
@@ -370,6 +436,7 @@ try {
   Install-Nuro
   Ensure-Shim
   Ensure-Path
+  Apply-UnsafeDevMode $UnsafeDevModeState
   $code = Validate-Run
   # Summary
   if ($Channel -eq 'dev') { Log ("Summary: Channel=dev Branch=$Branch Repo=$Repo") }
