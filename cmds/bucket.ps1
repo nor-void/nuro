@@ -1,4 +1,4 @@
-function NuroUsage_bucket {
+﻿function NuroUsage_bucket {
   'nuro bucket <add|ls|rm|pin|unpin> [...]'
 }
 
