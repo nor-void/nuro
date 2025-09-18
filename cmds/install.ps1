@@ -61,67 +61,109 @@ function NuroCmd_Install {
 
   Write-Host "Installing package: $($packageFile.Name)"
 
-  # 4. pip 実行
+  # 4. 仮想環境を用意してインストール
   $fullPath = $packageFile.FullName
-  $commandsToTry = @(
-    @{ Label='py -m pip';     Args=@('py','-m','pip','install',$fullPath) },
-    @{ Label='python -m pip'; Args=@('python','-m','pip','install',$fullPath) },
-    @{ Label='pip';           Args=@('pip','install',$fullPath) }
-  )
 
-  foreach ($entry in $commandsToTry) {
-    $exe = $entry.Args[0]
-    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { continue }
+  $currentDir = (Get-Location).Path
+  $venvRoot = Join-Path $currentDir $Package
 
-    $arguments = $entry.Args[1..($entry.Args.Length - 1)]
-    Write-Host "  -> $exe $($arguments -join ' ')"
-    try { & $exe @arguments } catch { Write-Host "  $exe の実行に失敗: $_" -ForegroundColor Yellow; continue }
+  $isWindows = [Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+  $scriptsDirName = if ($isWindows) { 'Scripts' } else { 'bin' }
+  $pythonExeName = if ($isWindows) { 'python.exe' } else { 'python' }
+  $entryExeName = if ($isWindows) { "{0}.exe" -f $Package } else { $Package }
+  $venvScriptsDir = Join-Path $venvRoot $scriptsDirName
+  $venvPython = Join-Path $venvScriptsDir $pythonExeName
+  $venvEntry = Join-Path $venvScriptsDir $entryExeName
 
-    if ($LASTEXITCODE -eq 0) {
-      # ===== 成功: 汎用 shim 作成（~/.nuro/venv 固定） =====
-      # ユーザーディレクトリを段階的に判定（PowerShell 5 互換対応）
-      $userRoot = $env:USERPROFILE
-      if ([string]::IsNullOrWhiteSpace($userRoot)) { $userRoot = $HOME }
-      if ([string]::IsNullOrWhiteSpace($userRoot)) { $userRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile) }
-      if ([string]::IsNullOrWhiteSpace($userRoot)) {
-        Write-Host "WARNING: ユーザーディレクトリを特定できません。shim をカレントディレクトリに作成します。" -ForegroundColor Yellow
-        $userRoot = (Get-Location).Path
+  if (-not (Test-Path $venvPython)) {
+    $pythonBootstrap = $null
+    foreach ($candidate in @('py','python3','python')) {
+      if (Get-Command $candidate -ErrorAction SilentlyContinue) {
+        $pythonBootstrap = $candidate
+        break
       }
-      $NURO_HOME = Join-Path $userRoot ".nuro"
-      $VENV_PY   = Join-Path $NURO_HOME "venv\Scripts\$Package.exe"
-      $BIN_DIR   = Join-Path $NURO_HOME "bin"
-      if (-not (Test-Path $VENV_PY)) {
-        Write-Host "WARNING: venv python not found: $VENV_PY (shim not created)" -ForegroundColor Yellow
-        Write-Host "インストールが完了しました。" -ForegroundColor Green
-        exit 0
-      }
-
-      try {
-        New-Item -ItemType Directory -Force -Path $BIN_DIR | Out-Null
-
-        # モジュールは "<Package>.<ModuleTail>"（ModuleTailが空なら Package 単体）
-        $Module = if ([string]::IsNullOrWhiteSpace($ModuleTail)) { $Package } else { "$Package.$ModuleTail" }
-
-        # シム名（既定は <Package>.cmd）
-        if ([string]::IsNullOrWhiteSpace($ShimName)) { $ShimName = $Package }
-        $SHIM = Join-Path $BIN_DIR ("{0}.cmd" -f $ShimName)
-
-        $shimContent = "@echo off`r`n""$VENV_PY"" %*"
-        Set-Content -Path $SHIM -Value $shimContent -Encoding Ascii
-
-        Write-Host "Shim created: $SHIM"
-        Write-Host "Run: $ShimName.shim --help"
-      } catch {
-        Write-Host "WARNING: shim creation failed: $_" -ForegroundColor Yellow
-      }
-
-      Write-Host "インストールが完了しました。" -ForegroundColor Green
-      exit 0
     }
 
-    Write-Host "  $exe の終了コード: $LASTEXITCODE" -ForegroundColor Yellow
+    if (-not $pythonBootstrap) {
+      Write-Host "python / py コマンドが見つかりません。仮想環境を作成できませんでした。" -ForegroundColor Red
+      exit 1
+    }
+
+    Write-Host "Creating virtual environment: $venvRoot"
+    try {
+      & $pythonBootstrap '-m' 'venv' $venvRoot
+    } catch {
+      Write-Host "仮想環境の作成に失敗しました: $_" -ForegroundColor Red
+      exit 1
+    }
+
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPython)) {
+      Write-Host "仮想環境の作成に失敗しました (exit code $LASTEXITCODE)。" -ForegroundColor Red
+      exit 1
+    }
+  } else {
+    Write-Host "Reusing existing virtual environment: $venvRoot"
   }
 
-  Write-Host "pip / python コマンドが見つからないか、インストールに失敗しました。" -ForegroundColor Red
-  exit 1
+  Write-Host "  -> $venvPython -m pip install $fullPath"
+  try {
+    & $venvPython '-m' 'pip' 'install' $fullPath
+  } catch {
+    Write-Host "パッケージのインストールに失敗しました: $_" -ForegroundColor Red
+    exit 1
+  }
+
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "pip install の終了コード: $LASTEXITCODE" -ForegroundColor Red
+    exit 1
+  }
+
+  # ===== 成功: シム作成（~/.nuro/bin に配置） =====
+  # ユーザーディレクトリを段階的に判定（PowerShell 5 互換対応）
+  $userRoot = $env:USERPROFILE
+  if ([string]::IsNullOrWhiteSpace($userRoot)) { $userRoot = $HOME }
+  if ([string]::IsNullOrWhiteSpace($userRoot)) { $userRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile) }
+  if ([string]::IsNullOrWhiteSpace($userRoot)) {
+    Write-Host "WARNING: ユーザーディレクトリを特定できません。shim をカレントディレクトリに作成します。" -ForegroundColor Yellow
+    $userRoot = $currentDir
+  }
+  $NURO_HOME = Join-Path $userRoot ".nuro"
+  $BIN_DIR   = Join-Path $NURO_HOME "bin"
+
+  try {
+    New-Item -ItemType Directory -Force -Path $BIN_DIR | Out-Null
+  } catch {
+    Write-Host "WARNING: shim 用ディレクトリの作成に失敗しました: $_" -ForegroundColor Yellow
+  }
+
+  # モジュールは "<Package>.<ModuleTail>"（ModuleTailが空なら Package 単体）
+  $Module = if ([string]::IsNullOrWhiteSpace($ModuleTail)) { $Package } else { "$Package.$ModuleTail" }
+
+  # シム名（既定は <Package>.cmd）
+  if ([string]::IsNullOrWhiteSpace($ShimName)) { $ShimName = $Package }
+  $SHIM = Join-Path $BIN_DIR ("{0}.cmd" -f $ShimName)
+
+  if (-not (Test-Path $BIN_DIR)) {
+    Write-Host "WARNING: shim 用ディレクトリにアクセスできないため、シムを作成できませんでした。" -ForegroundColor Yellow
+  } else {
+    if (-not (Test-Path $venvEntry)) {
+      Write-Host "WARNING: $Package のエントリーポイント ($venvEntry) が見つかりません。python -m $Module を使用します。" -ForegroundColor Yellow
+      $shimCommand = '"{0}" -m {1} %*' -f $venvPython, $Module
+    } else {
+      $shimCommand = '"{0}" %*' -f $venvEntry
+    }
+
+    $shimContent = "@echo off`r`n$shimCommand"
+    try {
+      Set-Content -Path $SHIM -Value $shimContent -Encoding Ascii
+      Write-Host "Shim created: $SHIM"
+    } catch {
+      Write-Host "WARNING: shim creation failed: $_" -ForegroundColor Yellow
+    }
+  }
+
+  Write-Host "インストールが完了しました。" -ForegroundColor Green
+  Write-Host "Run: $ShimName.cmd --help"
+  exit 0
 }
+
