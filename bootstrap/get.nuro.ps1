@@ -399,27 +399,36 @@ load_registry()
     }
   }
   $pyCode = @"
-import sys
 from nuro.registry import load_registry, save_registry
 
-reg = load_registry()
-buckets = reg.get("buckets")
-changed = False
-if not isinstance(buckets, list):
-    buckets = []
-    reg["buckets"] = buckets
-    changed = True
+def apply_flag() -> None:
+    reg = load_registry()
+    if not isinstance(reg, dict):
+        raise SystemExit("registry must be a dictionary")
 
-for bucket in list(buckets):
-    if not isinstance(bucket, dict):
-        changed = True
-        continue
-    if not bucket.get("unsafe-dev-mode"):
-        bucket["unsafe-dev-mode"] = True
+    buckets = reg.get("buckets")
+    if not isinstance(buckets, list):
+        buckets = []
+        reg["buckets"] = buckets
+
+    changed = False
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        if not bucket.get("unsafe-dev-mode"):
+            bucket["unsafe-dev-mode"] = True
+            changed = True
+
+    if not buckets:
+        reg["buckets"] = [{"name": "official", "unsafe-dev-mode": True}]
         changed = True
 
-if changed:
-    save_registry(reg)
+    if changed:
+        save_registry(reg)
+
+
+if __name__ == "__main__":
+    apply_flag()
 "@
   & $VENV_PY '-c' $pyCode
   if ($LASTEXITCODE -ne 0) {
