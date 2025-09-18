@@ -68,9 +68,9 @@ function NuroCmd_Install {
   # 4. pip 実行
   $fullPath = $packageFile.FullName
   $commandsToTry = @(
-    @{ Label = 'py -m pip'; Args = @('py', '-m', 'pip', 'install', $fullPath) },
-    @{ Label = 'python -m pip'; Args = @('python', '-m', 'pip', 'install', $fullPath) },
-    @{ Label = 'pip'; Args = @('pip', 'install', $fullPath) }
+    @{ Label = 'py -m pip';      Args = @('py',      '-m', 'pip', 'install', $fullPath) },
+    @{ Label = 'python -m pip';  Args = @('python',  '-m', 'pip', 'install', $fullPath) },
+    @{ Label = 'pip';            Args = @('pip',            'install', $fullPath) }
   )
 
   foreach ($entry in $commandsToTry) {
@@ -86,10 +86,90 @@ function NuroCmd_Install {
       Write-Host "  $exe の実行に失敗しました: $_" -ForegroundColor Yellow
       continue
     }
+
     if ($LASTEXITCODE -eq 0) {
+      # ===== 成功時: ~/.nuro/venv を前提に汎用 shim を作成 =====
+      $NURO_HOME = Join-Path ($env:USERPROFILE ?? $HOME) ".nuro"
+      $VENV_PY   = Join-Path $NURO_HOME "venv\Scripts\python.exe"
+      $BIN_DIR   = Join-Path $NURO_HOME "bin"
+      if (-not (Test-Path $VENV_PY)) {
+        Write-Host "WARNING: venv python not found: $VENV_PY (shim not created)" -ForegroundColor Yellow
+        Write-Host "インストールが完了しました。" -ForegroundColor Green
+        exit 0
+      }
+
+      try {
+        New-Item -ItemType Directory -Force -Path $BIN_DIR | Out-Null
+
+        # --- Python helper: console_scripts と top_level package を取得 ---
+        $pyHelper = @'
+import sys, json
+try:
+    import importlib.metadata as m
+except Exception:
+    import importlib_metadata as m  # backport
+name = sys.argv[1]
+out = {"top": [], "eps": []}
+try:
+    dist = m.distribution(name)
+    try:
+        txt = dist.read_text("top_level.txt") or ""
+        out["top"] = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+    except Exception:
+        pass
+    try:
+        for ep in getattr(dist, "entry_points", []):
+            if getattr(ep, "group", "") == "console_scripts":
+                out["eps"].append({"name": ep.name, "value": ep.value})
+    except Exception:
+        pass
+except Exception:
+    pass
+print(json.dumps(out))
+'@
+
+        $tmpPy = [IO.Path]::Combine([IO.Path]::GetTempPath(), "nu_meta_{0}.py" -f ([Guid]::NewGuid().ToString("N")))
+        Set-Content -Path $tmpPy -Value $pyHelper -Encoding Ascii
+        $json = & $VENV_PY $tmpPy $Package
+        Remove-Item $tmpPy -ErrorAction SilentlyContinue
+
+        $module = $null
+        $shimBase = $Package
+        try {
+          $meta = $json | ConvertFrom-Json
+          if ($meta.eps -and $meta.eps.Count -gt 0) {
+            $ep = $meta.eps | Select-Object -First 1
+            $shimBase = $ep.name
+            $module = ($ep.value -split ":",2)[0]
+          }
+          if (-not $module -and $meta.top -and $meta.top.Count -gt 0) {
+            $module = $meta.top[0]
+          }
+        } catch { }
+
+        if (-not $module) { $module = $Package }  # 最終フォールバック
+
+        $SHIM = Join-Path $BIN_DIR ("{0}.shim" -f $shimBase)
+        $shimContent = "@echo off`r`n""$VENV_PY"" -m $module %*"
+        Set-Content -Path $SHIM -Value $shimContent -Encoding Ascii
+
+        # PATH 追加（User スコープ）
+        $uPath = [Environment]::GetEnvironmentVariable('Path','User')
+        if ($uPath -notmatch [Regex]::Escape($BIN_DIR)) {
+          [Environment]::SetEnvironmentVariable('Path', ($uPath.TrimEnd(';') + ';' + $BIN_DIR), 'User')
+        }
+        $env:Path = ($env:Path.TrimEnd(';') + ';' + $BIN_DIR)
+
+        Write-Host ("Shim created: {0}" -f $SHIM)
+        Write-Host ("Run: {0}.shim --help" -f $shimBase)
+      } catch {
+        Write-Host "WARNING: shim creation failed: $_" -ForegroundColor Yellow
+      }
+
       Write-Host "インストールが完了しました。" -ForegroundColor Green
       exit 0
     }
+
     Write-Host "  $exe の終了コード: $LASTEXITCODE" -ForegroundColor Yellow
   }
 
