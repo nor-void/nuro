@@ -91,7 +91,7 @@ function NuroCmd_Install {
 
     Write-Host "Creating virtual environment: $venvRoot"
     try {
-      & $pythonBootstrap '-m' 'venv' $venvRoot
+      & $pythonBootstrap @('-m','venv',$venvRoot)
     } catch {
       Write-Host "仮想環境の作成に失敗しました: $_" -ForegroundColor Red
       exit 1
@@ -107,7 +107,7 @@ function NuroCmd_Install {
 
   Write-Host "  -> $venvPython -m pip install $fullPath"
   try {
-    & $venvPython '-m' 'pip' 'install' $fullPath
+    & $venvPython @('-m','pip','install',$fullPath)
   } catch {
     Write-Host "パッケージのインストールに失敗しました: $_" -ForegroundColor Red
     exit 1
@@ -136,6 +136,12 @@ function NuroCmd_Install {
     Write-Host "WARNING: shim 用ディレクトリの作成に失敗しました: $_" -ForegroundColor Yellow
   }
 
+  if (-not (Test-Path $BIN_DIR)) {
+    Write-Host "WARNING: shim 用ディレクトリにアクセスできないため、シムを作成できませんでした。" -ForegroundColor Yellow
+    Write-Host "インストールが完了しました。" -ForegroundColor Green
+    exit 0
+  }
+
   # モジュールは "<Package>.<ModuleTail>"（ModuleTailが空なら Package 単体）
   $Module = if ([string]::IsNullOrWhiteSpace($ModuleTail)) { $Package } else { "$Package.$ModuleTail" }
 
@@ -143,23 +149,19 @@ function NuroCmd_Install {
   if ([string]::IsNullOrWhiteSpace($ShimName)) { $ShimName = $Package }
   $SHIM = Join-Path $BIN_DIR ("{0}.cmd" -f $ShimName)
 
-  if (-not (Test-Path $BIN_DIR)) {
-    Write-Host "WARNING: shim 用ディレクトリにアクセスできないため、シムを作成できませんでした。" -ForegroundColor Yellow
+  if (-not (Test-Path $venvEntry)) {
+    Write-Host "WARNING: $Package のエントリーポイント ($venvEntry) が見つかりません。python -m $Module を使用します。" -ForegroundColor Yellow
+    $shimCommand = '"{0}" -m {1} %*' -f $venvPython, $Module
   } else {
-    if (-not (Test-Path $venvEntry)) {
-      Write-Host "WARNING: $Package のエントリーポイント ($venvEntry) が見つかりません。python -m $Module を使用します。" -ForegroundColor Yellow
-      $shimCommand = '"{0}" -m {1} %*' -f $venvPython, $Module
-    } else {
-      $shimCommand = '"{0}" %*' -f $venvEntry
-    }
+    $shimCommand = '"{0}" %*' -f $venvEntry
+  }
 
-    $shimContent = "@echo off`r`n$shimCommand"
-    try {
-      Set-Content -Path $SHIM -Value $shimContent -Encoding Ascii
-      Write-Host "Shim created: $SHIM"
-    } catch {
-      Write-Host "WARNING: shim creation failed: $_" -ForegroundColor Yellow
-    }
+  $shimContent = "@echo off`r`n$shimCommand"
+  try {
+    Set-Content -Path $SHIM -Value $shimContent -Encoding Ascii
+    Write-Host "Shim created: $SHIM"
+  } catch {
+    Write-Host "WARNING: shim creation failed: $_" -ForegroundColor Yellow
   }
 
   Write-Host "インストールが完了しました。" -ForegroundColor Green
