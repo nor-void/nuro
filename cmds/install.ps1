@@ -79,8 +79,16 @@ function NuroCmd_Install {
 
     if ($LASTEXITCODE -eq 0) {
       # ===== 成功: 汎用 shim 作成（~/.nuro/venv 固定） =====
-      $NURO_HOME = Join-Path ($env:USERPROFILE ?? $HOME) ".nuro"
-      $VENV_PY   = Join-Path $NURO_HOME "venv\Scripts\python.exe"
+      # ユーザーディレクトリを段階的に判定（PowerShell 5 互換対応）
+      $userRoot = $env:USERPROFILE
+      if ([string]::IsNullOrWhiteSpace($userRoot)) { $userRoot = $HOME }
+      if ([string]::IsNullOrWhiteSpace($userRoot)) { $userRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile) }
+      if ([string]::IsNullOrWhiteSpace($userRoot)) {
+        Write-Host "WARNING: ユーザーディレクトリを特定できません。shim をカレントディレクトリに作成します。" -ForegroundColor Yellow
+        $userRoot = (Get-Location).Path
+      }
+      $NURO_HOME = Join-Path $userRoot ".nuro"
+      $VENV_PY   = Join-Path $NURO_HOME "venv\Scripts\$Package.exe"
       $BIN_DIR   = Join-Path $NURO_HOME "bin"
       if (-not (Test-Path $VENV_PY)) {
         Write-Host "WARNING: venv python not found: $VENV_PY (shim not created)" -ForegroundColor Yellow
@@ -94,11 +102,11 @@ function NuroCmd_Install {
         # モジュールは "<Package>.<ModuleTail>"（ModuleTailが空なら Package 単体）
         $Module = if ([string]::IsNullOrWhiteSpace($ModuleTail)) { $Package } else { "$Package.$ModuleTail" }
 
-        # シム名（既定は <Package>.shim）
+        # シム名（既定は <Package>.cmd）
         if ([string]::IsNullOrWhiteSpace($ShimName)) { $ShimName = $Package }
-        $SHIM = Join-Path $BIN_DIR ("{0}.shim" -f $ShimName)
+        $SHIM = Join-Path $BIN_DIR ("{0}.cmd" -f $ShimName)
 
-        $shimContent = "@echo off`r`n""$VENV_PY"" -m $Module %*"
+        $shimContent = "@echo off`r`n""$VENV_PY"" %*"
         Set-Content -Path $SHIM -Value $shimContent -Encoding Ascii
 
         Write-Host "Shim created: $SHIM"
