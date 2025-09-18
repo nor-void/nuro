@@ -159,7 +159,6 @@ def print_root_usage(refresh: bool = False) -> None:
                 "uri": f"raw::{base}",
                 "priority": 100,
                 "trusted": True,
-                "unsafe-dev-mode": False,
             }
         # usage text cache directory
         ucache_dir = cache_dir() / "usage" / bucket_name
