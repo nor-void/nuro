@@ -10,7 +10,7 @@ function NuroCmd_Install {
     [Parameter(Mandatory = $true)][string]$Package,
     [string]$Version,
     [string]$ModuleTail = 'cli',     # 例: aixTool.cli の "cli" 部分
-    [string]$ShimName                # 省略時は $Package.shim
+    [string]$ShimName                # 省略時は $Package.cmd
   )
 
   Set-StrictMode -Version 2
@@ -89,9 +89,10 @@ function NuroCmd_Install {
       exit 1
     }
 
+    $venvArgs = @('-m','venv',$venvRoot)
     Write-Host "Creating virtual environment: $venvRoot"
     try {
-      & $pythonBootstrap @('-m','venv',$venvRoot)
+      & $pythonBootstrap @venvArgs
     } catch {
       Write-Host "仮想環境の作成に失敗しました: $_" -ForegroundColor Red
       exit 1
@@ -105,9 +106,10 @@ function NuroCmd_Install {
     Write-Host "Reusing existing virtual environment: $venvRoot"
   }
 
+  $pipArgs = @('-m','pip','install',$fullPath)
   Write-Host "  -> $venvPython -m pip install $fullPath"
   try {
-    & $venvPython @('-m','pip','install',$fullPath)
+    & $venvPython @pipArgs
   } catch {
     Write-Host "パッケージのインストールに失敗しました: $_" -ForegroundColor Red
     exit 1
