@@ -1,5 +1,5 @@
 __all__ = ["__version__", "DEFAULT_OFFICIAL_BUCKET_BASE"]
-__version__ = "0.1.18"
+__version__ = "0.1.19"
 
 # Default official bucket base (commands live under "cmds/")
 # This value is used to initialize ~/.nuro/config/config.json when missing.

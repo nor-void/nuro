@@ -184,13 +184,29 @@ def print_root_usage(refresh: bool = False) -> None:
                     out = ""
                     if t.exists():
                         ignore_policy = bool(official_bucket.get("unsafe-dev-mode"))
-                        out = run_usage_for_ps1_capture(t, n, ignore_execution_policy=ignore_policy) or ""
+                        result = run_usage_for_ps1_capture(
+                            t,
+                            n,
+                            ignore_execution_policy=ignore_policy,
+                        )
+                        if result.error_kind:
+                            if result.error_kind == "ps5":
+                                cached_text = "PowerShell 5では表示できません"
+                            else:
+                                cached_text = "ヘルプを取得できませんでした。"
+                            if result.error_detail:
+                                debug(
+                                    f"Usage capture error for {n}: {result.error_detail}"
+                                )
+                        else:
+                            cached_text = result.text
+                    else:
+                        cached_text = "ヘルプを取得できませんでした。"
                     # update cache file (even if empty, to avoid repeated fetches)
                     try:
-                        ufile.write_text(out, encoding="utf-8")
+                        ufile.write_text(cached_text, encoding="utf-8")
                     except Exception:
                         pass
-                    cached_text = out
                 # compute first line for table
                 if cached_text:
                     help_line = cached_text.splitlines()[0].strip()
