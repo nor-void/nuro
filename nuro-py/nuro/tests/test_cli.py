@@ -57,3 +57,25 @@ def test_main_invokes_marker_on_refresh(isolated_home, monkeypatch):
     assert exit_code == 0
     assert called["apply"] == 1
     assert called["refresh"] is True
+
+
+def test_main_invokes_marker_for_commands(isolated_home, monkeypatch):
+    """コマンド実行時もunsafeマーカー適用が呼ばれる"""
+    called = {"apply": 0, "run": None}
+
+    def fake_apply():
+        called["apply"] += 1
+        return False
+
+    def fake_run(name, args):
+        called["run"] = (name, args)
+        return 0
+
+    monkeypatch.setattr(cli, "apply_unsafe_dev_mode_from_marker", fake_apply)
+    monkeypatch.setattr(cli, "run_command", fake_run)
+
+    exit_code = cli.main(["time", "--utc"])
+
+    assert exit_code == 0
+    assert called["apply"] == 1
+    assert called["run"] == ("time", ["--utc"])
