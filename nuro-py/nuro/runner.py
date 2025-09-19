@@ -141,8 +141,10 @@ def _try_fetch_any(
 
 
 def run_command(name: str, args: List[str]) -> int:
+    debug(f"run_command start: name={name} args={args}")
     reg = load_registry()
     bucket_hint, cmd = _split_bucket_hint(name)
+    debug(f"Resolved command: cmd={cmd} bucket_hint={bucket_hint}")
 
     # help path: nuro <cmd> -h / --help
     help_requested = any(a in ("-h", "--help", "/?") for a in args)
@@ -155,11 +157,28 @@ def run_command(name: str, args: List[str]) -> int:
                 debug(f"Using cached script: cmd={cmd} ext={ext} path={p}")
                 if help_requested:
                     if ext == "ps1":
-                        return run_usage_for_ps1(p, cmd, ignore_execution_policy=_bucket_allows_unsafe(bucket))
+                        debug(
+                            "Dispatching PowerShell usage: "
+                            f"cmd={cmd} path={p} bucket={bucket.get('name') if isinstance(bucket, dict) else None}"
+                        )
+                        return run_usage_for_ps1(
+                            p,
+                            cmd,
+                            ignore_execution_policy=_bucket_allows_unsafe(bucket),
+                        )
                     print(f"nuro {cmd} - no usage available")
                     return 0
                 if ext == "ps1":
-                    return run_cmd_for_ps1(p, cmd, args, ignore_execution_policy=_bucket_allows_unsafe(bucket))
+                    debug(
+                        "Dispatching PowerShell command: "
+                        f"cmd={cmd} args={args} path={p} bucket={bucket.get('name') if isinstance(bucket, dict) else None}"
+                    )
+                    return run_cmd_for_ps1(
+                        p,
+                        cmd,
+                        args,
+                        ignore_execution_policy=_bucket_allows_unsafe(bucket),
+                    )
                 if ext == "py":
                     if not _ensure_script_requirements(p):
                         return 1
@@ -187,11 +206,28 @@ def run_command(name: str, args: List[str]) -> int:
         debug(f"Using freshly fetched script: cmd={cmd} ext={ext} path={path}")
         if help_requested:
             if ext == "ps1":
-                return run_usage_for_ps1(path, cmd, ignore_execution_policy=_bucket_allows_unsafe(bucket))
+                debug(
+                    "Dispatching fetched PowerShell usage: "
+                    f"cmd={cmd} path={path} bucket={bucket.get('name') if isinstance(bucket, dict) else None}"
+                )
+                return run_usage_for_ps1(
+                    path,
+                    cmd,
+                    ignore_execution_policy=_bucket_allows_unsafe(bucket),
+                )
             print(f"nuro {cmd} - no usage available")
             return 0
         if ext == "ps1":
-            return run_cmd_for_ps1(path, cmd, args, ignore_execution_policy=_bucket_allows_unsafe(bucket))
+            debug(
+                "Dispatching fetched PowerShell command: "
+                f"cmd={cmd} args={args} path={path} bucket={bucket.get('name') if isinstance(bucket, dict) else None}"
+            )
+            return run_cmd_for_ps1(
+                path,
+                cmd,
+                args,
+                ignore_execution_policy=_bucket_allows_unsafe(bucket),
+            )
         if ext == "py":
             if not _ensure_script_requirements(path):
                 return 1

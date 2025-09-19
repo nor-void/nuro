@@ -76,6 +76,24 @@ def _build_ps_shell(ignore_execution_policy: bool = False) -> List[str]:
     return shell
 
 
+def _read_transcript(path: Path) -> Optional[str]:
+    try:
+        if path.exists():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            return text if text.strip() else None
+    except Exception as exc:
+        debug(f"Transcript read failed ({path}): {exc}")
+    return None
+
+
+def _log_ps_failure(context: str, rc: int, lines: List[str], transcript: Path) -> None:
+    tail = lines[-20:] if lines else []
+    preview = " || ".join(tail) if tail else "<no-output>"
+    debug(
+        f"PowerShell failure: context={context} rc={rc} transcript={transcript} output_tail={preview}"
+    )
+
+
 def _detect_ps_major(shell: List[str]) -> Optional[int]:
     try:
         proc = subprocess.run(
@@ -128,26 +146,33 @@ def run_ps_file(file: Path, args: Iterable[str]) -> int:
         debug(f"Failed to start PowerShell: {e}")
         raise
 
+    captured_lines: List[str] = []
     captured_any = False
     if proc.stdout is not None:
         for line in proc.stdout:
             captured_any = True
+            stripped = line.rstrip("\r\n")
+            captured_lines.append(stripped)
             # pass-through to console
             print(line, end="")
     rc = proc.wait()
+    transcript_text = None
     if not captured_any:
         debug("No output captured from PowerShell process; attempting transcript fallback.")
-        try:
-            if ts_path.exists():
-                text = ts_path.read_text(encoding="utf-8", errors="replace")
-                if text.strip():
-                    print(text, end="" if text.endswith("\n") else "\n")
-                else:
-                    debug("Transcript file is empty.")
-            else:
-                debug("Transcript file was not created.")
-        except Exception as e:
-            debug(f"Failed to read transcript: {e}")
+        transcript_text = _read_transcript(ts_path)
+        if transcript_text:
+            print(transcript_text, end="" if transcript_text.endswith("\n") else "\n")
+            captured_lines.extend(transcript_text.splitlines())
+        else:
+            debug("Transcript fallback yielded no content.")
+
+    if rc != 0:
+        _log_ps_failure(
+            context=f"run_ps_file path={file}",
+            rc=rc,
+            lines=captured_lines,
+            transcript=ts_path,
+        )
     debug(f"PowerShell exited with code: {rc}")
     return rc
 
@@ -185,21 +210,31 @@ def run_usage_for_ps1(target: Path, cmd_name: str, ignore_execution_policy: bool
     except Exception as e:
         debug(f"Failed to start PowerShell: {e}")
         raise
+    captured_lines: List[str] = []
     captured_any = False
     if proc.stdout is not None:
         for line in proc.stdout:
             captured_any = True
+            stripped = line.rstrip("\r\n")
+            captured_lines.append(stripped)
             print(line, end="")
     rc = proc.wait()
     if not captured_any:
         debug("No output captured from PowerShell process; attempting transcript fallback.")
-        try:
-            if ts_path.exists():
-                text = ts_path.read_text(encoding="utf-8", errors="replace")
-                if text.strip():
-                    print(text, end="" if text.endswith("\n") else "\n")
-        except Exception as e:
-            debug(f"Failed to read transcript: {e}")
+        transcript_text = _read_transcript(ts_path)
+        if transcript_text:
+            print(transcript_text, end="" if transcript_text.endswith("\n") else "\n")
+            captured_lines.extend(transcript_text.splitlines())
+        else:
+            debug("Transcript fallback yielded no content.")
+
+    if rc != 0:
+        _log_ps_failure(
+            context=f"run_usage_for_ps1 cmd={cmd_name}",
+            rc=rc,
+            lines=captured_lines,
+            transcript=ts_path,
+        )
     debug(f"PowerShell exited with code: {rc}")
     return rc
 
@@ -300,19 +335,29 @@ def run_cmd_for_ps1(target: Path, cmd_name: str, args: Iterable[str], ignore_exe
     except Exception as e:
         debug(f"Failed to start PowerShell: {e}")
         raise
+    captured_lines: List[str] = []
     captured_any = False
     if proc.stdout is not None:
         for line in proc.stdout:
             captured_any = True
+            stripped = line.rstrip("\r\n")
+            captured_lines.append(stripped)
             print(line, end="")
     rc = proc.wait()
     if not captured_any:
-        try:
-            if ts_path.exists():
-                text = ts_path.read_text(encoding="utf-8", errors="replace")
-                if text.strip():
-                    print(text, end="" if text.endswith("\n") else "\n")
-        except Exception as e:
-            debug(f"Failed to read transcript: {e}")
+        transcript_text = _read_transcript(ts_path)
+        if transcript_text:
+            print(transcript_text, end="" if transcript_text.endswith("\n") else "\n")
+            captured_lines.extend(transcript_text.splitlines())
+        else:
+            debug("Transcript fallback yielded no content.")
+
+    if rc != 0:
+        _log_ps_failure(
+            context=f"run_cmd_for_ps1 cmd={cmd_name}",
+            rc=rc,
+            lines=captured_lines,
+            transcript=ts_path,
+        )
     debug(f"PowerShell exited with code: {rc}")
     return rc
