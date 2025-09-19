@@ -4,6 +4,64 @@ function NuroUsage_Install {
   'nuro install <Package> [<Version>] [-ModuleTail cli] [-ShimName <name>] # PRIVATE_PYPI_REPO を設定しておく'
 }
 
+function Resolve-NuroUserRoot {
+  $userRoot = $env:USERPROFILE
+  if ([string]::IsNullOrWhiteSpace($userRoot)) { $userRoot = $HOME }
+  if ([string]::IsNullOrWhiteSpace($userRoot)) {
+    try {
+      $userRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    } catch {
+      $userRoot = $null
+    }
+  }
+  return $userRoot
+}
+
+function Test-PythonCommand {
+  param(
+    [Parameter(Mandatory = $true)][string]$Command,
+    [string[]]$Arguments = @()
+  )
+
+  try {
+    & $Command @Arguments 2>&1 | Out-Null
+  } catch {
+    return $false
+  }
+
+  return $LASTEXITCODE -eq 0
+}
+
+function Resolve-PythonBootstrap {
+  param(
+    [string]$UserRoot
+  )
+
+  if (-not [string]::IsNullOrWhiteSpace($UserRoot)) {
+    $nuroHome = Join-Path $UserRoot '.nuro'
+    $managedCandidates = @(
+      Join-Path (Join-Path (Join-Path $nuroHome 'venv') 'Scripts') 'python.exe',
+      Join-Path (Join-Path (Join-Path $nuroHome 'venv') 'bin') 'python3'
+    )
+    foreach ($candidatePath in $managedCandidates) {
+      if ($candidatePath -and (Test-Path $candidatePath)) {
+        if (Test-PythonCommand -Command $candidatePath -Arguments @('--version')) {
+          return $candidatePath
+        }
+      }
+    }
+  }
+
+  foreach ($candidateName in @('py','python3','python')) {
+    if (-not (Get-Command $candidateName -ErrorAction SilentlyContinue)) { continue }
+    if (Test-PythonCommand -Command $candidateName -Arguments @('--version')) {
+      return $candidateName
+    }
+  }
+
+  return $null
+}
+
 function NuroCmd_Install {
   [CmdletBinding()]
   param(
@@ -67,22 +125,17 @@ function NuroCmd_Install {
   $currentDir = (Get-Location).Path
   $venvRoot = Join-Path $currentDir $Package
 
-  $isWindows = [Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
-  $scriptsDirName = if ($isWindows) { 'Scripts' } else { 'bin' }
-  $pythonExeName = if ($isWindows) { 'python.exe' } else { 'python' }
-  $entryExeName = if ($isWindows) { "{0}.exe" -f $Package } else { $Package }
+  $isWindows_ = [Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+  $scriptsDirName = if ($isWindows_) { 'Scripts' } else { 'bin' }
+  $pythonExeName = if ($isWindows_) { 'python.exe' } else { 'python' }
+  $entryExeName = if ($isWindows_) { "{0}.exe" -f $Package } else { $Package }
   $venvScriptsDir = Join-Path $venvRoot $scriptsDirName
   $venvPython = Join-Path $venvScriptsDir $pythonExeName
   $venvEntry = Join-Path $venvScriptsDir $entryExeName
+  $userRoot = Resolve-NuroUserRoot
 
   if (-not (Test-Path $venvPython)) {
-    $pythonBootstrap = $null
-    foreach ($candidate in @('py','python3','python')) {
-      if (Get-Command $candidate -ErrorAction SilentlyContinue) {
-        $pythonBootstrap = $candidate
-        break
-      }
-    }
+    $pythonBootstrap = Resolve-PythonBootstrap -UserRoot $userRoot
 
     if (-not $pythonBootstrap) {
       Write-Host "python / py コマンドが見つかりません。仮想環境を作成できませんでした。" -ForegroundColor Red
@@ -122,9 +175,6 @@ function NuroCmd_Install {
 
   # ===== 成功: シム作成（~/.nuro/bin に配置） =====
   # ユーザーディレクトリを段階的に判定（PowerShell 5 互換対応）
-  $userRoot = $env:USERPROFILE
-  if ([string]::IsNullOrWhiteSpace($userRoot)) { $userRoot = $HOME }
-  if ([string]::IsNullOrWhiteSpace($userRoot)) { $userRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile) }
   if ([string]::IsNullOrWhiteSpace($userRoot)) {
     Write-Host "WARNING: ユーザーディレクトリを特定できません。shim をカレントディレクトリに作成します。" -ForegroundColor Yellow
     $userRoot = $currentDir
@@ -170,4 +220,3 @@ function NuroCmd_Install {
   Write-Host "Run: $ShimName.cmd --help"
   exit 0
 }
-
